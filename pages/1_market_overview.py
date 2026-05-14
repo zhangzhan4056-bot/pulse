@@ -79,12 +79,22 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     )
 
     fig.update_layout(
-        height=60,
-        margin=dict(l=0, r=0, t=0, b=0),
-        xaxis=dict(visible=False),
+        height=80,
+        margin=dict(l=25, r=5, t=5, b=20),
+        xaxis=dict(
+            visible=True,
+            showgrid=False,
+            showticklabels=True,
+            tickformat="%m/%d",
+            tickfont=dict(size=8, color="#aaa"),
+        ),
         yaxis=dict(
-            visible=False,
+            visible=True,
+            showgrid=False,
+            showticklabels=True,
+            tickfont=dict(size=8, color="#aaa"),
             range=[y_min - y_padding, y_max + y_padding],
+            side="right",
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -107,13 +117,45 @@ def render_metric_card(
     symbol: str,
     sparkline_df: pd.DataFrame = None,
 ):
-    """渲染指标卡片（含迷你走势图在右下角）"""
+    """渲染指标卡片（文字在左，走势图在右）"""
     color = get_change_color(change_pct)
     formatted_price = format_price(price, symbol)
     formatted_change = format_change(change_pct)
 
-    # 使用容器包裹卡片
-    with st.container():
+    # 使用 columns 实现左右布局
+    if sparkline_df is not None and not sparkline_df.empty:
+        col_info, col_chart = st.columns([1, 1])
+
+        with col_info:
+            st.markdown(
+                f"""
+                <div style="
+                    padding: 0.8rem 1rem;
+                    border-radius: 0.5rem;
+                    border: 1px solid #e0e0e0;
+                    background: white;
+                    height: 120px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                ">
+                    <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
+                    <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
+                    <div style="font-size: 0.95rem; color: {color}; font-weight: 500;">{formatted_change}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col_chart:
+            fig = create_sparkline(sparkline_df, color, symbol)
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"sparkline_{symbol}",
+            )
+    else:
         st.markdown(
             f"""
             <div style="
@@ -121,7 +163,10 @@ def render_metric_card(
                 border-radius: 0.5rem;
                 border: 1px solid #e0e0e0;
                 background: white;
-                min-height: 100px;
+                height: 120px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
             ">
                 <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
                 <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
@@ -130,16 +175,6 @@ def render_metric_card(
             """,
             unsafe_allow_html=True,
         )
-
-        # 迷你走势图（叠在卡片右下角）
-        if sparkline_df is not None and not sparkline_df.empty:
-            fig = create_sparkline(sparkline_df, color, symbol)
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={"displayModeBar": False},
-                key=f"sparkline_{symbol}",
-            )
 
 
 def get_data_last_updated(dm: DataManager) -> str:
