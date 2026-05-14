@@ -6,7 +6,7 @@ A股 + 美股投资监控与决策辅助系统
 import streamlit as st
 
 st.set_page_config(
-    page_title="Market Pulse",
+    page_title="首页 - Market Pulse",
     page_icon=" ",
     layout="wide",
     initial_sidebar_state="expanded",

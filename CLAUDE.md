@@ -15,8 +15,8 @@ market-pulse/
 │   └── components/
 │       └── charts.py       # Plotly 图表组件
 ├── pages/                  # Streamlit 页面（必须在根目录）
-│   ├── 1_market_overview.py # P1: 市场全景（盯盘）
-│   └── 2_opportunity_scan.py # P2: 机会扫描（分析）
+│   ├── 1_市场全景.py        # P1: 市场全景（盯盘）
+│   └── 2_机会扫描.py        # P2: 机会扫描（分析）
 ├── core/                   # 核心逻辑
 │   ├── data/               # 数据获取层（已完成）
 │   └── strategy/           # 策略引擎
