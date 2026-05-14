@@ -58,48 +58,42 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
 
     # 格式化 hover 文本
     if symbol in ["000001", "399001", "000300"]:
-        hovertemplate = "%{x|%Y-%m-%d}<br>价格: %{y:,.2f}<extra></extra>"
+        hovertemplate = "%{x|%m-%d}<br>%{y:,.2f}<extra></extra>"
     else:
-        hovertemplate = "%{x|%Y-%m-%d}<br>价格: $%{y:,.2f}<extra></extra>"
+        hovertemplate = "%{x|%m-%d}<br>$%{y:,.2f}<extra></extra>"
+
+    # 计算 Y 轴范围（极值区间 + 5% padding）
+    y_min = df["close"].min()
+    y_max = df["close"].max()
+    y_padding = (y_max - y_min) * 0.05
 
     fig.add_trace(
         go.Scatter(
             x=df["date"],
             y=df["close"],
             mode="lines",
-            line=dict(color=color, width=2),
-            fill="tozeroy",
-            fillcolor=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.1)",
+            line=dict(color=color, width=1.5),
             showlegend=False,
             hovertemplate=hovertemplate,
         )
     )
 
     fig.update_layout(
-        height=100,
-        margin=dict(l=40, r=10, t=5, b=20),
-        xaxis=dict(
-            visible=True,
-            showgrid=False,
-            showticklabels=True,
-            tickformat="%m/%d",
-            tickfont=dict(size=9, color="#999"),
-        ),
+        height=60,
+        margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False),
         yaxis=dict(
-            visible=True,
-            showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
-            showticklabels=True,
-            tickfont=dict(size=9, color="#999"),
-            side="right",
+            visible=False,
+            range=[y_min - y_padding, y_max + y_padding],
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        hovermode="x unified",
+        hovermode="x",
         hoverlabel=dict(
             bgcolor="white",
-            font_size=11,
+            font_size=10,
             font_color="#333",
+            bordercolor="#e0e0e0",
         ),
     )
 
@@ -113,7 +107,7 @@ def render_metric_card(
     symbol: str,
     sparkline_df: pd.DataFrame = None,
 ):
-    """渲染指标卡片（含迷你走势图）"""
+    """渲染指标卡片（含迷你走势图在右下角）"""
     color = get_change_color(change_pct)
     formatted_price = format_price(price, symbol)
     formatted_change = format_change(change_pct)
@@ -123,11 +117,11 @@ def render_metric_card(
         st.markdown(
             f"""
             <div style="
-                padding: 0.8rem 1rem 0.5rem 1rem;
-                border-radius: 0.5rem 0.5rem 0 0;
+                padding: 0.8rem 1rem;
+                border-radius: 0.5rem;
                 border: 1px solid #e0e0e0;
-                border-bottom: none;
                 background: white;
+                min-height: 100px;
             ">
                 <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
                 <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
@@ -137,7 +131,7 @@ def render_metric_card(
             unsafe_allow_html=True,
         )
 
-        # 迷你走势图（在卡片内）
+        # 迷你走势图（叠在卡片右下角）
         if sparkline_df is not None and not sparkline_df.empty:
             fig = create_sparkline(sparkline_df, color, symbol)
             st.plotly_chart(
@@ -145,15 +139,6 @@ def render_metric_card(
                 use_container_width=True,
                 config={"displayModeBar": False},
                 key=f"sparkline_{symbol}",
-            )
-        else:
-            # 占位，保持卡片高度一致
-            st.markdown(
-                """<div style="height: 100px; border: 1px solid #e0e0e0; border-top: none;
-                border-radius: 0 0 0.5rem 0.5rem; background: #f9f9f9;
-                display: flex; align-items: center; justify-content: center; color: #999; font-size: 0.8rem;">
-                暂无走势数据</div>""",
-                unsafe_allow_html=True,
             )
 
 
