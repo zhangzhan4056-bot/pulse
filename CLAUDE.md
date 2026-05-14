@@ -19,14 +19,14 @@ market-pulse/
 │   └── 2_机会扫描.py        # P2: 机会扫描（分析）
 ├── core/                   # 核心逻辑
 │   ├── data/               # 数据获取层（已完成）
+│   │   ├── config.py       # API key 管理、资产配置
+│   │   ├── base.py         # 基础获取器（重试、限流）
+│   │   ├── twelvedata.py   # Twelve Data API 封装
+│   │   ├── akshare.py      # AkShare 封装（新浪源）
+│   │   ├── storage.py      # SQLite 存储层
+│   │   └── manager.py      # DataManager 统一接口
 │   └── strategy/           # 策略引擎
 │       └── indicators.py   # 技术指标计算
-│       ├── config.py       # API key 管理、资产配置
-│       ├── base.py         # 基础获取器（重试、限流）
-│       ├── twelvedata.py   # Twelve Data API 封装
-│       ├── akshare.py      # AkShare 封装（新浪源）
-│       ├── storage.py      # SQLite 存储层
-│       └── manager.py      # DataManager 统一接口
 ├── data/                   # 本地数据缓存 (SQLite)
 ├── scripts/                # 工具脚本
 │   └── test_data.py        # 数据层验证脚本
@@ -48,15 +48,13 @@ market-pulse/
 
 ### 已完成
 - [x] 数据获取层 (core/data/)
-- [x] P1 市场全景页面 (pages/1_market_overview.py)
+- [x] P1 市场全景页面 (pages/1_市场全景.py)
 - [x] 策略引擎 - 技术指标 (core/strategy/indicators.py)
-- [x] P2 机会扫描页面 (pages/2_opportunity_scan.py) — 动量排名+核心卫星+轮动信号
+- [x] P2 机会扫描页面 (pages/2_机会扫描.py) — 动量排名+核心卫星+轮动信号
 
 ### 待开发
 - [ ] P3 操作建议页面
-- [ ] P3 操作建议页面
 - [ ] P4 复盘回顾页面
-- [ ] 策略引擎 (core/strategy/)
 - [ ] 回测引擎 (core/backtest/)
 - [ ] 告警引擎 (core/alert/)
 
