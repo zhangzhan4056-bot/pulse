@@ -47,7 +47,7 @@ market-pulse/
 - [x] 数据获取层 (core/data/)
 - [x] P1 市场全景页面 (pages/1_market_overview.py)
 - [x] 策略引擎 - 技术指标 (core/strategy/indicators.py)
-- [x] P2 机会扫描页面 (pages/2_opportunity_scan.py)
+- [x] P2 机会扫描页面 (pages/2_opportunity_scan.py) — 动量排名+核心卫星+轮动信号
 
 ### 待开发
 - [ ] P3 操作建议页面
