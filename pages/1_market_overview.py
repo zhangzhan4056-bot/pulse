@@ -55,19 +55,22 @@ def get_change_color(change_pct: float) -> str:
 def create_sparkline_image(df: pd.DataFrame, color: str, symbol: str) -> str:
     """创建迷你走势图并转换为 base64 图片"""
     import base64
-    from io import BytesIO
+
+    # 转换日期为字符串，避免 JSON 序列化问题
+    dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
+    closes = df["close"].tolist()
 
     fig = go.Figure()
 
     # 计算 Y 轴范围（极值区间 + 5% padding）
-    y_min = df["close"].min()
-    y_max = df["close"].max()
+    y_min = min(closes)
+    y_max = max(closes)
     y_padding = (y_max - y_min) * 0.05
 
     fig.add_trace(
         go.Scatter(
-            x=df["date"],
-            y=df["close"],
+            x=dates,
+            y=closes,
             mode="lines",
             line=dict(color=color, width=2),
             showlegend=False,
@@ -75,17 +78,17 @@ def create_sparkline_image(df: pd.DataFrame, color: str, symbol: str) -> str:
     )
 
     # 计算极值点用于标注
-    min_idx = df["close"].idxmin()
-    max_idx = df["close"].idxmax()
+    min_idx = closes.index(y_min)
+    max_idx = closes.index(y_max)
 
     # 添加最高点和最低点标注
     fig.add_trace(
         go.Scatter(
-            x=[df.loc[max_idx, "date"]],
-            y=[df.loc[max_idx, "close"]],
+            x=[dates[max_idx]],
+            y=[y_max],
             mode="markers+text",
             marker=dict(color=color, size=6),
-            text=[f"{df.loc[max_idx, 'close']:.0f}"],
+            text=[f"{y_max:.0f}"],
             textposition="top center",
             textfont=dict(size=8, color="#666"),
             showlegend=False,
@@ -93,11 +96,11 @@ def create_sparkline_image(df: pd.DataFrame, color: str, symbol: str) -> str:
     )
     fig.add_trace(
         go.Scatter(
-            x=[df.loc[min_idx, "date"]],
-            y=[df.loc[min_idx, "close"]],
+            x=[dates[min_idx]],
+            y=[y_min],
             mode="markers+text",
             marker=dict(color=color, size=6),
-            text=[f"{df.loc[min_idx, 'close']:.0f}"],
+            text=[f"{y_min:.0f}"],
             textposition="bottom center",
             textfont=dict(size=8, color="#666"),
             showlegend=False,
