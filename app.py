@@ -29,8 +29,9 @@ st.markdown("""
 
 ### 数据源
 
-- 美股/ETF：Twelve Data API
-- A股指数：AkShare（东方财富）
+- 美股/ETF：Twelve Data API（大类资产 + 板块 ETF）
+- A股指数：AkShare 新浪源
+- 全球指数：AkShare 新浪源（日经225、KOSPI）
 
 ---
 
