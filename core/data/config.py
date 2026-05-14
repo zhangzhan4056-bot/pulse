@@ -56,6 +56,19 @@ ASSETS = {
         "NKY": "日经225",
         "KOSPI": "韩国KOSPI",
     },
+    # 美股板块 ETF（用于赛道分析）
+    "us_sectors": {
+        "XLK": "科技",
+        "XLF": "金融",
+        "XLE": "能源",
+        "XLV": "医疗",
+        "XLI": "工业",
+        "XLP": "消费必需",
+        "XLU": "公用事业",
+        "XLRE": "房地产",
+        "XLB": "材料",
+        "XLC": "通信",
+    },
 }
 
 # 所有美股 symbol
@@ -70,6 +83,9 @@ CN_SYMBOLS = ASSETS["cn_equity"]
 
 # 全球指数 symbol（日韩等）
 GLOBAL_SYMBOLS = ASSETS["global_equity"]
+
+# 美股板块 ETF symbol
+US_SECTORS_SYMBOLS = ASSETS["us_sectors"]
 
 # Twelve Data API 配置
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"

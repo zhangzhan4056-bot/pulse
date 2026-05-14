@@ -14,7 +14,8 @@ import plotly.graph_objects as go
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
+from core.strategy.indicators import calc_momentum_score, calc_returns
 from app.components.charts import (
     create_candlestick_chart,
     create_line_chart,
@@ -336,6 +337,63 @@ def main():
 
     except Exception as e:
         st.error(f"亚太指数数据获取失败: {e}")
+
+    st.divider()
+
+    # ============================================================
+    # 美股板块热度
+    # ============================================================
+    st.subheader("  美股板块热度")
+
+    try:
+        # 加载板块数据（需要 180 天以确保 3M 收益率可计算）
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+
+        sector_data = []
+        for symbol, name in US_SECTORS_SYMBOLS.items():
+            df = dm.load(symbol, start_date, end_date)
+            if not df.empty:
+                score = calc_momentum_score(df["close"])
+                returns = calc_returns(df["close"], [21, 63])
+                ret_dict = returns.to_dict("records")[0]
+                sector_data.append({
+                    "板块": name,
+                    "代码": symbol,
+                    "1月%": ret_dict.get("1M"),
+                    "3月%": ret_dict.get("3M"),
+                    "动量评分": score,
+                })
+
+        if sector_data:
+            # 按动量评分排序
+            sector_df = pd.DataFrame(sector_data)
+            sector_df = sector_df.sort_values("动量评分", ascending=False, na_position="last")
+            sector_df = sector_df.reset_index(drop=True)
+            sector_df.index = sector_df.index + 1
+            sector_df.index.name = "排名"
+
+            # 格式化
+            display_sector = sector_df.copy()
+            for col in ["1月%", "3月%"]:
+                display_sector[col] = display_sector[col].apply(
+                    lambda x: f"+{x:.1f}%" if x and x > 0 else f"{x:.1f}%" if x else "N/A"
+                )
+            display_sector["动量评分"] = display_sector["动量评分"].apply(
+                lambda x: f"{x:.0f}" if x else "N/A"
+            )
+
+            st.dataframe(display_sector, use_container_width=True)
+
+            # 热门板块提示
+            top_sectors = sector_df.head(3)
+            hot_names = "、".join(top_sectors["板块"].tolist())
+            st.info(f"近 3 个月热门板块：{hot_names}")
+        else:
+            st.warning("暂无板块数据")
+
+    except Exception as e:
+        st.error(f"板块数据获取失败: {e}")
 
     st.divider()
 

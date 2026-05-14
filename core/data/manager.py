@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
 from .twelvedata import TwelveDataFetcher
 from .akshare import AkShareFetcher
 from .storage import DataStorage
@@ -83,16 +83,38 @@ class DataManager:
                 results[symbol] = 0
         return results
 
+    def fetch_us_sectors(self, outputsize: int = 250) -> Dict[str, int]:
+        """获取美股板块 ETF 数据
+
+        Args:
+            outputsize: 获取最近 N 天数据
+
+        Returns:
+            dict: {symbol: 写入行数}
+        """
+        results = {}
+        for symbol in US_SECTORS_SYMBOLS:
+            try:
+                df = self.twelvedata.get_time_series(symbol, outputsize=outputsize)
+                count = self.storage.save(df, symbol, "twelvedata")
+                results[symbol] = count
+                logger.info(f"获取板块 {symbol} 成功，写入 {count} 条")
+            except Exception as e:
+                logger.error(f"获取板块 {symbol} 失败: {e}")
+                results[symbol] = 0
+        return results
+
     def fetch_all(self) -> Dict[str, Dict[str, int]]:
         """获取所有数据
 
         Returns:
-            dict: {"us": {symbol: count}, "cn": {symbol: count}, "global": {symbol: count}}
+            dict: {"us": ..., "cn": ..., "global": ..., "sectors": ...}
         """
         return {
             "us": self.fetch_us_assets(),
             "cn": self.fetch_cn_assets(),
             "global": self.fetch_global_assets(),
+            "sectors": self.fetch_us_sectors(),
         }
 
     def load(
