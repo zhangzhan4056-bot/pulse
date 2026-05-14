@@ -39,7 +39,7 @@ market-pulse/
   - SPY (标普500), QQQ (纳指100), TLT (20年国债), CL (WTI原油)
   - API key: 环境变量 `TWELVEDATA_API_KEY` 或 `~/.local/bin/finquote.conf`
 - **A股指数**: AkShare 新浪源（东方财富被墙）
-  - 000001 (上证综指), 399001 (深证成指), 000300 (沪深300)
+  - 399006 (创业板指), 000688 (科创50), 000300 (沪深300)
 
 ## 开发状态
 
