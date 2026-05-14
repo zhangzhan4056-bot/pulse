@@ -91,3 +91,12 @@ streamlit run app.py
 - 个股止损线: -8%
 - 组合回撤: -10% 减半仓，-15% 清仓
 - 单票仓位: 不超过总仓位 20%
+
+## 已知陷阱
+
+- **AkShare 用新浪源**：东方财富源（`*_em` 函数）被墙，一律用 `stock_zh_index_daily`、`index_global_hist_sina`
+- **Twelve Data 免费计划**：每分钟 8 次，`quote` 端点支持的 symbol 比 `time_series` 少，测试新 symbol 用 `time_series`
+- **国际指数用中文名查询**：`index_global_hist_sina` 的 symbol 是中文名（"日经225指数"），不是代码（"N225"）
+- **Python 3.9 兼容**：不支持 `str | None`，用 `Optional[str]`
+- **Streamlit pages 目录必须在项目根目录**：不能嵌套在 app/ 下
+- **API key 配置文件格式**：`finquote.conf` 是 `key=value` 带注释，不能直接读整行当 key
