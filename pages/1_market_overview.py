@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -51,17 +52,48 @@ def get_change_color(change_pct: float) -> str:
     return "#ef5350" if change_pct >= 0 else "#26a69a"
 
 
+def create_sparkline(df: pd.DataFrame, color: str) -> go.Figure:
+    """创建迷你走势图（sparkline）"""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["close"],
+            mode="lines",
+            line=dict(color=color, width=2),
+            fill="tozeroy",
+            fillcolor=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.1)",
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+
+    fig.update_layout(
+        height=80,
+        margin=dict(l=0, r=0, t=0, b=0),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+
+    return fig
+
+
 def render_metric_card(
     title: str,
     price: float,
     change_pct: float,
     symbol: str,
+    sparkline_df: pd.DataFrame = None,
 ):
-    """渲染指标卡片"""
+    """渲染指标卡片（含迷你走势图）"""
     color = get_change_color(change_pct)
     formatted_price = format_price(price, symbol)
     formatted_change = format_change(change_pct)
 
+    # 卡片容器
     st.markdown(
         f"""
         <div style="
@@ -69,15 +101,19 @@ def render_metric_card(
             border-radius: 0.5rem;
             border: 1px solid #e0e0e0;
             background: white;
-            text-align: center;
         ">
             <div style="font-size: 0.875rem; color: #666; margin-bottom: 0.5rem;">{title}</div>
             <div style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.25rem;">{formatted_price}</div>
-            <div style="font-size: 1rem; color: {color}; font-weight: 500;">{formatted_change}</div>
+            <div style="font-size: 1rem; color: {color}; font-weight: 500; margin-bottom: 0.5rem;">{formatted_change}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # 迷你走势图
+    if sparkline_df is not None and not sparkline_df.empty:
+        fig = create_sparkline(sparkline_df, color)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 def get_data_last_updated(dm: DataManager) -> str:
@@ -92,22 +128,27 @@ def get_data_last_updated(dm: DataManager) -> str:
     return "暂无数据"
 
 
-def get_us_asset_data(dm: DataManager) -> dict:
-    """从数据库获取美股资产数据"""
-    result = {}
-    for symbol, desc in US_SYMBOLS.items():
-        df = dm.load(symbol)
-        if not df.empty:
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-            price = latest["close"]
-            change_pct = ((price - prev["close"]) / prev["close"]) * 100
-            result[symbol] = {
-                "desc": desc,
-                "price": price,
-                "change_pct": change_pct,
-            }
-    return result
+def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: int = 90) -> dict:
+    """获取资产数据（含历史走势）"""
+    # 计算日期范围
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    df = dm.load(symbol, start_date, end_date)
+    if df.empty:
+        return None
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+    price = latest["close"]
+    change_pct = ((price - prev["close"]) / prev["close"]) * 100
+
+    return {
+        "desc": desc,
+        "price": price,
+        "change_pct": change_pct,
+        "history": df,
+    }
 
 
 def refresh_us_data(dm: DataManager, progress_bar) -> dict:
@@ -126,7 +167,7 @@ def refresh_us_data(dm: DataManager, progress_bar) -> dict:
             price = dm.twelvedata.get_latest_price(symbol)
 
             # 获取历史数据
-            df = dm.twelvedata.get_time_series(symbol, outputsize=30)
+            df = dm.twelvedata.get_time_series(symbol, outputsize=90)
             count = dm.storage.save(df, symbol, "twelvedata")
 
             results[symbol] = {"price": price, "count": count}
@@ -181,27 +222,22 @@ def main():
     st.subheader("  美股大类资产")
 
     try:
-        # 从数据库获取美股数据
-        us_data = get_us_asset_data(dm)
-
-        if us_data:
-            cols = st.columns(len(US_SYMBOLS))
-            for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
-                with col:
-                    if symbol in us_data:
-                        data = us_data[symbol]
-                        render_metric_card(
-                            data["desc"],
-                            data["price"],
-                            data["change_pct"],
-                            symbol,
-                        )
-                    else:
-                        st.warning(f"{desc}: 暂无数据")
-                        st.caption("点击侧边栏「刷新美股数据」获取")
-        else:
-            st.warning("美股数据为空")
-            st.info("请点击侧边栏「刷新美股数据」按钮获取最新数据")
+        # 从数据库获取美股数据（含3个月走势）
+        cols = st.columns(len(US_SYMBOLS))
+        for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
+            with col:
+                data = get_asset_data_with_history(dm, symbol, desc, days=90)
+                if data:
+                    render_metric_card(
+                        data["desc"],
+                        data["price"],
+                        data["change_pct"],
+                        symbol,
+                        sparkline_df=data["history"],
+                    )
+                else:
+                    st.warning(f"{desc}: 暂无数据")
+                    st.caption("点击侧边栏「刷新美股数据」获取")
 
     except Exception as e:
         st.error(f"美股数据获取失败: {e}")
@@ -214,19 +250,21 @@ def main():
     st.subheader("  A股主要指数")
 
     try:
-        # 从数据库获取 A 股数据
+        # 从数据库获取 A 股数据（含3个月走势）
         cn_symbols = {"000001": "上证综指", "399001": "深证成指", "000300": "沪深300"}
         cols = st.columns(len(cn_symbols))
 
         for col, (symbol, name) in zip(cols, cn_symbols.items()):
             with col:
-                df = dm.load(symbol)
-                if not df.empty:
-                    latest = df.iloc[-1]
-                    prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-                    price = latest["close"]
-                    change_pct = ((price - prev["close"]) / prev["close"]) * 100
-                    render_metric_card(name, price, change_pct, symbol)
+                data = get_asset_data_with_history(dm, symbol, name, days=90)
+                if data:
+                    render_metric_card(
+                        data["desc"],
+                        data["price"],
+                        data["change_pct"],
+                        symbol,
+                        sparkline_df=data["history"],
+                    )
                 else:
                     st.warning(f"{name}: 暂无数据")
 
