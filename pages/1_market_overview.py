@@ -53,7 +53,7 @@ def get_change_color(change_pct: float) -> str:
 
 
 def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
-    """创建迷你走势图（可交互，自适应坐标轴）"""
+    """创建迷你走势图（可交互，带坐标轴）"""
     # 转换日期为字符串
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
     closes = df["close"].tolist()
@@ -83,14 +83,23 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     )
 
     fig.update_layout(
-        height=100,
-        margin=dict(l=0, r=0, t=5, b=5),
+        height=120,
+        margin=dict(l=40, r=10, t=5, b=25),
         xaxis=dict(
-            visible=False,
+            visible=True,
+            showgrid=False,
+            showticklabels=True,
+            tickformat="%m/%d",
+            tickfont=dict(size=8, color="#999"),
         ),
         yaxis=dict(
-            visible=False,
+            visible=True,
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.05)",
+            showticklabels=True,
+            tickfont=dict(size=8, color="#999"),
             range=[y_min - y_padding, y_max + y_padding],
+            side="right",
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -183,7 +192,7 @@ def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: i
 
 
 def refresh_us_data(dm: DataManager, progress_bar) -> dict:
-    """从 API 获取最新美股数据"""
+    """从 API 获取最新美股数据（近1年）"""
     import time
 
     results = {}
@@ -197,8 +206,8 @@ def refresh_us_data(dm: DataManager, progress_bar) -> dict:
             # 获取最新价格
             price = dm.twelvedata.get_latest_price(symbol)
 
-            # 获取历史数据
-            df = dm.twelvedata.get_time_series(symbol, outputsize=90)
+            # 获取近1年历史数据（约250个交易日）
+            df = dm.twelvedata.get_time_series(symbol, outputsize=250)
             count = dm.storage.save(df, symbol, "twelvedata")
 
             results[symbol] = {"price": price, "count": count}
@@ -230,7 +239,7 @@ def main():
 
         # 刷新按钮
         if st.button("  刷新美股数据", use_container_width=True):
-            st.warning("正在获取最新数据，请等待约 30 秒...")
+            st.warning("正在获取近1年历史数据，请等待约 40 秒...")
             progress_bar = st.progress(0, text="开始获取...")
 
             results = refresh_us_data(dm, progress_bar)
@@ -320,11 +329,11 @@ def main():
         format_func=lambda x: f"{symbol_labels.get(x, x)} ({x})",
     )
 
-    # 时间范围
-    time_range = st.select_slider(
+    # 时间范围（下拉框）
+    time_range = st.selectbox(
         "时间范围",
         options=["1周", "1月", "3月", "6月", "1年"],
-        value="3月",
+        index=2,  # 默认 3月
     )
 
     # 计算日期范围
