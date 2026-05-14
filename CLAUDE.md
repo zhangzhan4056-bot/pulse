@@ -15,9 +15,12 @@ market-pulse/
 │   └── components/
 │       └── charts.py       # Plotly 图表组件
 ├── pages/                  # Streamlit 页面（必须在根目录）
-│   └── 1_market_overview.py # P1: 市场全景（盯盘）
+│   ├── 1_market_overview.py # P1: 市场全景（盯盘）
+│   └── 2_opportunity_scan.py # P2: 机会扫描（分析）
 ├── core/                   # 核心逻辑
-│   └── data/               # 数据获取层（已完成）
+│   ├── data/               # 数据获取层（已完成）
+│   └── strategy/           # 策略引擎
+│       └── indicators.py   # 技术指标计算
 │       ├── config.py       # API key 管理、资产配置
 │       ├── base.py         # 基础获取器（重试、限流）
 │       ├── twelvedata.py   # Twelve Data API 封装
@@ -43,9 +46,11 @@ market-pulse/
 ### 已完成
 - [x] 数据获取层 (core/data/)
 - [x] P1 市场全景页面 (pages/1_market_overview.py)
+- [x] 策略引擎 - 技术指标 (core/strategy/indicators.py)
+- [x] P2 机会扫描页面 (pages/2_opportunity_scan.py)
 
 ### 待开发
-- [ ] P2 机会扫描页面
+- [ ] P3 操作建议页面
 - [ ] P3 操作建议页面
 - [ ] P4 复盘回顾页面
 - [ ] 策略引擎 (core/strategy/)
