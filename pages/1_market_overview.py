@@ -53,7 +53,7 @@ def get_change_color(change_pct: float) -> str:
 
 
 def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
-    """创建迷你走势图（可交互）"""
+    """创建迷你走势图（可交互，自适应坐标轴）"""
     # 转换日期为字符串
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
     closes = df["close"].tolist()
@@ -76,15 +76,15 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
             x=dates,
             y=closes,
             mode="lines",
-            line=dict(color=color, width=1.5),
+            line=dict(color=color, width=2),
             showlegend=False,
             hovertemplate=hovertemplate,
         )
     )
 
     fig.update_layout(
-        height=80,
-        margin=dict(l=0, r=0, t=0, b=0),
+        height=100,
+        margin=dict(l=0, r=0, t=5, b=5),
         xaxis=dict(
             visible=False,
         ),
@@ -106,75 +106,44 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     return fig
 
 
-def render_metric_card(
+def render_asset_card(
     title: str,
     price: float,
     change_pct: float,
     symbol: str,
     sparkline_df: pd.DataFrame = None,
 ):
-    """渲染指标卡片（文字在左，走势图在右）"""
+    """渲染资产卡片（卡片 + 走势图）"""
     color = get_change_color(change_pct)
     formatted_price = format_price(price, symbol)
     formatted_change = format_change(change_pct)
 
+    # 卡片
+    st.markdown(
+        f"""
+        <div style="
+            border-radius: 0.5rem;
+            border: 1px solid #e0e0e0;
+            background: white;
+            padding: 0.8rem 1rem;
+            text-align: center;
+        ">
+            <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
+            <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
+            <div style="font-size: 0.9rem; color: {color}; font-weight: 500;">{formatted_change}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 走势图（卡片下方）
     if sparkline_df is not None and not sparkline_df.empty:
-        # 有走势图：左右布局
-        col_info, col_chart = st.columns([1, 1])
-
-        with col_info:
-            st.markdown(
-                f"""
-                <div style="
-                    border-radius: 0.5rem 0 0 0.5rem;
-                    border: 1px solid #e0e0e0;
-                    border-right: none;
-                    background: white;
-                    padding: 0.8rem 1rem;
-                    height: 100px;
-                    display: flex;
-                    flex-direction: column;
-                    justify-content: center;
-                ">
-                    <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
-                    <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
-                    <div style="font-size: 0.9rem; color: {color}; font-weight: 500;">{formatted_change}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with col_chart:
-            # 走势图容器（带边框，与左侧形成整体）
-            st.markdown('<div style="border: 1px solid #e0e0e0; border-radius: 0 0.5rem 0.5rem 0; border-left: none; padding: 5px;">', unsafe_allow_html=True)
-            fig = create_sparkline(sparkline_df, color, symbol)
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={"displayModeBar": False},
-                key=f"sparkline_{symbol}",
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        # 无走势图：单独卡片
-        st.markdown(
-            f"""
-            <div style="
-                border-radius: 0.5rem;
-                border: 1px solid #e0e0e0;
-                background: white;
-                padding: 0.8rem 1rem;
-                height: 100px;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-            ">
-                <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
-                <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
-                <div style="font-size: 0.9rem; color: {color}; font-weight: 500;">{formatted_change}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        fig = create_sparkline(sparkline_df, color, symbol)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=f"sparkline_{symbol}",
         )
 
 
@@ -290,7 +259,7 @@ def main():
             with col:
                 data = get_asset_data_with_history(dm, symbol, desc, days=90)
                 if data:
-                    render_metric_card(
+                    render_asset_card(
                         data["desc"],
                         data["price"],
                         data["change_pct"],
@@ -320,7 +289,7 @@ def main():
             with col:
                 data = get_asset_data_with_history(dm, symbol, name, days=90)
                 if data:
-                    render_metric_card(
+                    render_asset_card(
                         data["desc"],
                         data["price"],
                         data["change_pct"],
