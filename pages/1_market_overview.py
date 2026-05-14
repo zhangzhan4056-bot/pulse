@@ -52,9 +52,15 @@ def get_change_color(change_pct: float) -> str:
     return "#ef5350" if change_pct >= 0 else "#26a69a"
 
 
-def create_sparkline(df: pd.DataFrame, color: str) -> go.Figure:
+def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     """创建迷你走势图（sparkline）"""
     fig = go.Figure()
+
+    # 格式化 hover 文本
+    if symbol in ["000001", "399001", "000300"]:
+        hovertemplate = "%{x|%Y-%m-%d}<br>价格: %{y:,.2f}<extra></extra>"
+    else:
+        hovertemplate = "%{x|%Y-%m-%d}<br>价格: $%{y:,.2f}<extra></extra>"
 
     fig.add_trace(
         go.Scatter(
@@ -65,17 +71,36 @@ def create_sparkline(df: pd.DataFrame, color: str) -> go.Figure:
             fill="tozeroy",
             fillcolor=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.1)",
             showlegend=False,
-            hoverinfo="skip",
+            hovertemplate=hovertemplate,
         )
     )
 
     fig.update_layout(
-        height=80,
-        margin=dict(l=0, r=0, t=0, b=0),
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
+        height=100,
+        margin=dict(l=40, r=10, t=5, b=20),
+        xaxis=dict(
+            visible=True,
+            showgrid=False,
+            showticklabels=True,
+            tickformat="%m/%d",
+            tickfont=dict(size=9, color="#999"),
+        ),
+        yaxis=dict(
+            visible=True,
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.05)",
+            showticklabels=True,
+            tickfont=dict(size=9, color="#999"),
+            side="right",
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=11,
+            font_color="#333",
+        ),
     )
 
     return fig
@@ -93,27 +118,43 @@ def render_metric_card(
     formatted_price = format_price(price, symbol)
     formatted_change = format_change(change_pct)
 
-    # 卡片容器
-    st.markdown(
-        f"""
-        <div style="
-            padding: 1rem;
-            border-radius: 0.5rem;
-            border: 1px solid #e0e0e0;
-            background: white;
-        ">
-            <div style="font-size: 0.875rem; color: #666; margin-bottom: 0.5rem;">{title}</div>
-            <div style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.25rem;">{formatted_price}</div>
-            <div style="font-size: 1rem; color: {color}; font-weight: 500; margin-bottom: 0.5rem;">{formatted_change}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # 使用容器包裹卡片
+    with st.container():
+        st.markdown(
+            f"""
+            <div style="
+                padding: 0.8rem 1rem 0.5rem 1rem;
+                border-radius: 0.5rem 0.5rem 0 0;
+                border: 1px solid #e0e0e0;
+                border-bottom: none;
+                background: white;
+            ">
+                <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
+                <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
+                <div style="font-size: 0.95rem; color: {color}; font-weight: 500;">{formatted_change}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    # 迷你走势图
-    if sparkline_df is not None and not sparkline_df.empty:
-        fig = create_sparkline(sparkline_df, color)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        # 迷你走势图（在卡片内）
+        if sparkline_df is not None and not sparkline_df.empty:
+            fig = create_sparkline(sparkline_df, color, symbol)
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"sparkline_{symbol}",
+            )
+        else:
+            # 占位，保持卡片高度一致
+            st.markdown(
+                """<div style="height: 100px; border: 1px solid #e0e0e0; border-top: none;
+                border-radius: 0 0 0.5rem 0.5rem; background: #f9f9f9;
+                display: flex; align-items: center; justify-content: center; color: #999; font-size: 0.8rem;">
+                暂无走势数据</div>""",
+                unsafe_allow_html=True,
+            )
 
 
 def get_data_last_updated(dm: DataManager) -> str:
