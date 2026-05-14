@@ -16,10 +16,15 @@ def get_api_key() -> str:
     if key:
         return key
 
-    # 配置文件
+    # 配置文件（支持 key=value 格式和纯 key 格式）
     conf_path = Path.home() / ".local" / "bin" / "finquote.conf"
     if conf_path.exists():
-        return conf_path.read_text().strip()
+        for line in conf_path.read_text().strip().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                if "=" in line:
+                    return line.split("=", 1)[1].strip()
+                return line
 
     raise ValueError(
         "未找到 Twelve Data API key。"
@@ -46,6 +51,11 @@ ASSETS = {
         "000688": "科创50",
         "000300": "沪深300",
     },
+    # 其他亚太指数
+    "global_equity": {
+        "NKY": "日经225",
+        "KOSPI": "韩国KOSPI",
+    },
 }
 
 # 所有美股 symbol
@@ -57,6 +67,9 @@ US_SYMBOLS = {
 
 # 所有 A股 symbol
 CN_SYMBOLS = ASSETS["cn_equity"]
+
+# 全球指数 symbol（日韩等）
+GLOBAL_SYMBOLS = ASSETS["global_equity"]
 
 # Twelve Data API 配置
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"

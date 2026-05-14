@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS
+from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 from app.components.charts import (
     create_candlestick_chart,
     create_line_chart,
@@ -36,7 +36,7 @@ def get_data_manager():
 
 def format_price(price: float, symbol: str) -> str:
     """格式化价格显示"""
-    if symbol in CN_SYMBOLS:
+    if symbol in CN_SYMBOLS or symbol in GLOBAL_SYMBOLS:
         return f"{price:,.2f}"
     return f"${price:,.2f}"
 
@@ -59,7 +59,7 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     closes = df["close"].tolist()
 
     # 格式化 hover 文本
-    if symbol in CN_SYMBOLS:
+    if symbol in CN_SYMBOLS or symbol in GLOBAL_SYMBOLS:
         hovertemplate = "%{x}<br>%{y:,.2f}<extra></extra>"
     else:
         hovertemplate = "%{x}<br>$%{y:,.2f}<extra></extra>"
@@ -313,13 +313,40 @@ def main():
     st.divider()
 
     # ============================================================
+    # 亚太指数
+    # ============================================================
+    st.subheader("  亚太指数")
+
+    try:
+        cols = st.columns(len(GLOBAL_SYMBOLS))
+
+        for col, (symbol, name) in zip(cols, GLOBAL_SYMBOLS.items()):
+            with col:
+                data = get_asset_data_with_history(dm, symbol, name, days=90)
+                if data:
+                    render_asset_card(
+                        data["desc"],
+                        data["price"],
+                        data["change_pct"],
+                        symbol,
+                        sparkline_df=data["history"],
+                    )
+                else:
+                    st.warning(f"{name}: 暂无数据")
+
+    except Exception as e:
+        st.error(f"亚太指数数据获取失败: {e}")
+
+    st.divider()
+
+    # ============================================================
     # 走势图表
     # ============================================================
     st.subheader("  走势图表")
 
     # 资产选择（使用 symbol 作为 key）
-    symbol_options = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys())
-    symbol_labels = {**US_SYMBOLS, **CN_SYMBOLS}
+    symbol_options = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) + list(GLOBAL_SYMBOLS.keys())
+    symbol_labels = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
 
     selected_symbols = st.multiselect(
         "选择资产",

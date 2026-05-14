@@ -9,13 +9,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from core.data.config import US_SYMBOLS, CN_SYMBOLS
+from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 
 
 # 资产角色定义
 CORE_ASSETS = ["SPY", "TLT"]  # 核心资产：长期持有
 # 卫星资产 = 全部资产 - 核心资产（从 config 动态获取）
-SATELLITE_ASSETS = [s for s in list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) if s not in CORE_ASSETS]
+SATELLITE_ASSETS = [s for s in list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) + list(GLOBAL_SYMBOLS.keys()) if s not in CORE_ASSETS]
 
 
 # ============================================================

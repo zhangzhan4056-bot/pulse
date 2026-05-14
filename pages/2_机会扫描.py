@@ -14,7 +14,7 @@ import pandas as pd
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS
+from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 from core.strategy.indicators import (
     calc_returns,
     calc_momentum_score,
@@ -58,7 +58,7 @@ def load_all_assets(dm: DataManager, days: int = 365) -> Dict[str, pd.DataFrame]
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS}
+    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
     data = {}
 
     for symbol in all_symbols:

@@ -20,6 +20,12 @@ INDEX_CODE_MAP = {
     "000016": "sh000016",  # 上证50
 }
 
+# 全球指数代码映射（symbol -> AkShare 中文名称）
+GLOBAL_INDEX_MAP = {
+    "NKY": "日经225指数",
+    "KOSPI": "首尔综合指数",
+}
+
 
 class AkShareFetcher:
     """AkShare A股指数数据获取器"""
@@ -58,6 +64,36 @@ class AkShareFetcher:
         df["date"] = pd.to_datetime(df["date"])
 
         # 按日期升序
+        df = df.sort_values("date").reset_index(drop=True)
+
+        return df[["date", "open", "high", "low", "close", "volume"]]
+
+    def get_global_index_hist(
+        self,
+        symbol: str,
+    ) -> pd.DataFrame:
+        """获取全球指数历史数据（使用新浪源）
+
+        Args:
+            symbol: 指数代码，如 NKY (日经225), KOSPI (韩国)
+
+        Returns:
+            DataFrame: 标准化列名 (date, open, high, low, close, volume)
+        """
+        cn_name = GLOBAL_INDEX_MAP.get(symbol)
+        if not cn_name:
+            raise ValueError(f"未知的全球指数代码: {symbol}，支持: {list(GLOBAL_INDEX_MAP.keys())}")
+
+        try:
+            df = ak.index_global_hist_sina(symbol=cn_name)
+        except Exception as e:
+            logger.error(f"获取全球指数 {symbol} 失败: {e}")
+            raise
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date").reset_index(drop=True)
 
         return df[["date", "open", "high", "low", "close", "volume"]]

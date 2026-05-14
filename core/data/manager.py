@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS
+from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 from .twelvedata import TwelveDataFetcher
 from .akshare import AkShareFetcher
 from .storage import DataStorage
@@ -65,15 +65,34 @@ class DataManager:
                 results[symbol] = 0
         return results
 
+    def fetch_global_assets(self) -> Dict[str, int]:
+        """获取全球指数数据（日韩等）
+
+        Returns:
+            dict: {symbol: 写入行数}
+        """
+        results = {}
+        for symbol in GLOBAL_SYMBOLS:
+            try:
+                df = self.akshare.get_global_index_hist(symbol)
+                count = self.storage.save(df, symbol, "akshare_global")
+                results[symbol] = count
+                logger.info(f"获取 {symbol} 成功，写入 {count} 条")
+            except Exception as e:
+                logger.error(f"获取 {symbol} 失败: {e}")
+                results[symbol] = 0
+        return results
+
     def fetch_all(self) -> Dict[str, Dict[str, int]]:
         """获取所有数据
 
         Returns:
-            dict: {"us": {symbol: count}, "cn": {symbol: count}}
+            dict: {"us": {symbol: count}, "cn": {symbol: count}, "global": {symbol: count}}
         """
         return {
             "us": self.fetch_us_assets(),
             "cn": self.fetch_cn_assets(),
+            "global": self.fetch_global_assets(),
         }
 
     def load(
