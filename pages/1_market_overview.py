@@ -11,9 +11,9 @@ import streamlit as st
 import pandas as pd
 
 # 添加项目根目录到 path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, ASSETS
+from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS
 from app.components.charts import (
     create_candlestick_chart,
     create_line_chart,
@@ -80,6 +80,24 @@ def render_metric_card(
     )
 
 
+def get_us_asset_data(dm: DataManager) -> dict:
+    """从数据库获取美股资产数据（避免 API 限流）"""
+    result = {}
+    for symbol, desc in US_SYMBOLS.items():
+        df = dm.load(symbol)
+        if not df.empty:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+            price = latest["close"]
+            change_pct = ((price - prev["close"]) / prev["close"]) * 100
+            result[symbol] = {
+                "desc": desc,
+                "price": price,
+                "change_pct": change_pct,
+            }
+    return result
+
+
 def main():
     st.title("  市场全景")
     st.caption("大类资产实时行情与走势")
@@ -102,26 +120,25 @@ def main():
     st.subheader("  美股大类资产")
 
     try:
-        # 获取美股实时行情
-        us_quotes = {}
-        for symbol in US_SYMBOLS:
-            try:
-                quote = dm.get_quote(symbol)
-                us_quotes[symbol] = quote
-            except Exception as e:
-                st.warning(f"获取 {symbol} 失败: {e}")
+        # 从数据库获取美股数据（避免 API 限流）
+        us_data = get_us_asset_data(dm)
 
-        # 渲染卡片
-        cols = st.columns(len(US_SYMBOLS))
-        for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
-            with col:
-                if symbol in us_quotes:
-                    quote = us_quotes[symbol]
-                    price = float(quote["close"])
-                    change_pct = float(quote["percent_change"])
-                    render_metric_card(desc, price, change_pct, symbol)
-                else:
-                    st.error(f"{desc} 数据获取失败")
+        if us_data:
+            cols = st.columns(len(US_SYMBOLS))
+            for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
+                with col:
+                    if symbol in us_data:
+                        data = us_data[symbol]
+                        render_metric_card(
+                            data["desc"],
+                            data["price"],
+                            data["change_pct"],
+                            symbol,
+                        )
+                    else:
+                        st.warning(f"{desc}: 暂无数据，请先运行数据获取脚本")
+        else:
+            st.warning("美股数据为空，请先运行数据获取脚本")
 
     except Exception as e:
         st.error(f"美股数据获取失败: {e}")
@@ -134,22 +151,21 @@ def main():
     st.subheader("  A股主要指数")
 
     try:
-        # 获取A股实时行情
-        cn_df = dm.get_cn_realtime()
+        # 从数据库获取 A 股数据
+        cn_symbols = {"000001": "上证综指", "399001": "深证成指", "000300": "沪深300"}
+        cols = st.columns(len(cn_symbols))
 
-        if not cn_df.empty:
-            # 筛选主要指数
-            main_indices = ["000001", "399001", "000300"]
-            cn_data = cn_df[cn_df["code"].isin(main_indices)]
-
-            cols = st.columns(len(main_indices))
-            for col, (_, row) in zip(cols, cn_data.iterrows()):
-                with col:
-                    price = float(row["price"])
-                    change_pct = float(row["change_pct"])
-                    render_metric_card(row["name"], price, change_pct, row["code"])
-        else:
-            st.warning("A股实时行情数据为空")
+        for col, (symbol, name) in zip(cols, cn_symbols.items()):
+            with col:
+                df = dm.load(symbol)
+                if not df.empty:
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+                    price = latest["close"]
+                    change_pct = ((price - prev["close"]) / prev["close"]) * 100
+                    render_metric_card(name, price, change_pct, symbol)
+                else:
+                    st.warning(f"{name}: 暂无数据")
 
     except Exception as e:
         st.error(f"A股数据获取失败: {e}")
@@ -161,12 +177,15 @@ def main():
     # ============================================================
     st.subheader("  走势图表")
 
-    # 资产选择
-    all_symbols = {**US_SYMBOLS, **{v: k for k, v in CN_SYMBOLS.items()}}
-    selected_names = st.multiselect(
+    # 资产选择（使用 symbol 作为 key）
+    symbol_options = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys())
+    symbol_labels = {**US_SYMBOLS, **CN_SYMBOLS}
+
+    selected_symbols = st.multiselect(
         "选择资产",
-        options=list(all_symbols.keys()),
-        default=["标普500 ETF", "纳斯达克100 ETF"],
+        options=symbol_options,
+        default=["SPY", "QQQ"],
+        format_func=lambda x: f"{symbol_labels.get(x, x)} ({x})",
     )
 
     # 时间范围
@@ -184,12 +203,10 @@ def main():
 
     # 获取历史数据
     chart_data = {}
-    for name in selected_names:
-        symbol = all_symbols.get(name)
-        if symbol:
-            df = dm.load(symbol, start_date, end_date)
-            if not df.empty:
-                chart_data[symbol] = df
+    for symbol in selected_symbols:
+        df = dm.load(symbol, start_date, end_date)
+        if not df.empty:
+            chart_data[symbol] = df
 
     if chart_data:
         # 多资产对比图
