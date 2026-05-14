@@ -1,5 +1,7 @@
 """图表组件 - Plotly 图表封装"""
 
+from typing import Optional, Dict
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -8,7 +10,7 @@ from plotly.subplots import make_subplots
 def create_candlestick_chart(
     df: pd.DataFrame,
     symbol: str,
-    title: str | None = None,
+    title: Optional[str] = None,
 ) -> go.Figure:
     """创建 K 线图
 
@@ -75,7 +77,7 @@ def create_candlestick_chart(
 def create_line_chart(
     df: pd.DataFrame,
     symbol: str,
-    title: str | None = None,
+    title: Optional[str] = None,
     yaxis_title: str = "价格",
 ) -> go.Figure:
     """创建折线图
@@ -114,7 +116,7 @@ def create_line_chart(
 
 
 def create_multi_line_chart(
-    data: dict[str, pd.DataFrame],
+    data: Dict[str, pd.DataFrame],
     title: str = "资产走势对比",
     normalize: bool = True,
 ) -> go.Figure:
