@@ -28,6 +28,54 @@ st.set_page_config(
     layout="wide",
 )
 
+# 深色模式配色方案
+COLORS = {
+    "bg": "#1a1a2e",
+    "card_bg": "#16213e",
+    "card_border": "#2a3a5c",
+    "text_primary": "#e0e0e0",
+    "text_secondary": "#8892a0",
+    "text_muted": "#5a6577",
+    "up": "#ff6b6b",
+    "down": "#51cf66",
+    "accent": "#4dabf7",
+}
+
+# 自定义 CSS 样式
+st.markdown(f"""
+<style>
+    /* 全局背景 */
+    .stApp {{
+        background-color: {COLORS["bg"]};
+    }}
+
+    /* 侧边栏 */
+    section[data-testid="stSidebar"] {{
+        background-color: {COLORS["bg"]};
+    }}
+
+    /* 标题颜色 */
+    h1, h2, h3, h4, h5, h6 {{
+        color: {COLORS["text_primary"]} !important;
+    }}
+
+    /* 普通文字颜色 */
+    p, span, label, .stMarkdown {{
+        color: {COLORS["text_secondary"]};
+    }}
+
+    /* 输入框样式 */
+    .stSelectbox, .stMultiselect {{
+        background-color: {COLORS["card_bg"]};
+    }}
+
+    /* 分割线 */
+    hr {{
+        border-color: {COLORS["card_border"]};
+    }}
+</style>
+""", unsafe_allow_html=True)
+
 # 缓存 DataManager 实例
 @st.cache_resource
 def get_data_manager():
@@ -49,7 +97,7 @@ def format_change(change_pct: float) -> str:
 
 def get_change_color(change_pct: float) -> str:
     """获取涨跌幅颜色（A股习惯：涨红跌绿）"""
-    return "#ef5350" if change_pct >= 0 else "#26a69a"
+    return COLORS["up"] if change_pct >= 0 else COLORS["down"]
 
 
 def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
@@ -90,14 +138,14 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
             showgrid=False,
             showticklabels=True,
             tickformat="%m/%d",
-            tickfont=dict(size=8, color="#999"),
+            tickfont=dict(size=8, color=COLORS["text_muted"]),
         ),
         yaxis=dict(
             visible=True,
             showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
+            gridcolor="rgba(255,255,255,0.05)",
             showticklabels=True,
-            tickfont=dict(size=8, color="#999"),
+            tickfont=dict(size=8, color=COLORS["text_muted"]),
             range=[y_min - y_padding, y_max + y_padding],
             side="right",
         ),
@@ -105,10 +153,10 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
         hovermode="x",
         hoverlabel=dict(
-            bgcolor="white",
+            bgcolor=COLORS["card_bg"],
             font_size=10,
-            font_color="#333",
-            bordercolor="#e0e0e0",
+            font_color=COLORS["text_primary"],
+            bordercolor=COLORS["card_border"],
         ),
     )
 
@@ -132,13 +180,13 @@ def render_asset_card(
         f"""
         <div style="
             border-radius: 0.5rem;
-            border: 1px solid #e0e0e0;
-            background: white;
+            border: 1px solid {COLORS["card_border"]};
+            background: {COLORS["card_bg"]};
             padding: 0.8rem 1rem;
             text-align: center;
         ">
-            <div style="font-size: 0.85rem; color: #666; margin-bottom: 0.3rem;">{title}</div>
-            <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 0.15rem;">{formatted_price}</div>
+            <div style="font-size: 0.85rem; color: {COLORS["text_muted"]}; margin-bottom: 0.3rem;">{title}</div>
+            <div style="font-size: 1.3rem; font-weight: bold; color: {COLORS["text_primary"]}; margin-bottom: 0.15rem;">{formatted_price}</div>
             <div style="font-size: 0.9rem; color: {color}; font-weight: 500;">{formatted_change}</div>
         </div>
         """,
