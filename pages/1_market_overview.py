@@ -80,8 +80,20 @@ def render_metric_card(
     )
 
 
+def get_data_last_updated(dm: DataManager) -> str:
+    """获取数据最后更新时间"""
+    stats = dm.get_stats()
+    if stats.empty:
+        return "暂无数据"
+    # 获取最新的更新时间
+    last_dates = stats["last_date"].tolist()
+    if last_dates:
+        return max(last_dates)
+    return "暂无数据"
+
+
 def get_us_asset_data(dm: DataManager) -> dict:
-    """从数据库获取美股资产数据（避免 API 限流）"""
+    """从数据库获取美股资产数据"""
     result = {}
     for symbol, desc in US_SYMBOLS.items():
         df = dm.load(symbol)
@@ -98,21 +110,70 @@ def get_us_asset_data(dm: DataManager) -> dict:
     return result
 
 
+def refresh_us_data(dm: DataManager, progress_bar) -> dict:
+    """从 API 获取最新美股数据"""
+    import time
+
+    results = {}
+    symbols = list(US_SYMBOLS.keys())
+
+    for i, symbol in enumerate(symbols):
+        try:
+            # 更新进度
+            progress_bar.progress((i) / len(symbols), text=f"获取 {symbol}...")
+
+            # 获取最新价格
+            price = dm.twelvedata.get_latest_price(symbol)
+
+            # 获取历史数据
+            df = dm.twelvedata.get_time_series(symbol, outputsize=30)
+            count = dm.storage.save(df, symbol, "twelvedata")
+
+            results[symbol] = {"price": price, "count": count}
+
+            # 等待 8 秒（确保不超过每分钟 8 次限制）
+            if i < len(symbols) - 1:
+                time.sleep(8)
+
+        except Exception as e:
+            results[symbol] = {"error": str(e)}
+
+    progress_bar.progress(1.0, text="完成")
+    return results
+
+
 def main():
     st.title("  市场全景")
     st.caption("大类资产实时行情与走势")
 
     dm = get_data_manager()
 
-    # 侧边栏：数据刷新
+    # 侧边栏：数据控制
     with st.sidebar:
         st.subheader("数据控制")
-        if st.button("  刷新数据", use_container_width=True):
-            st.cache_data.clear()
+
+        # 显示数据最后更新时间
+        last_updated = get_data_last_updated(dm)
+        st.caption(f"数据更新至: {last_updated}")
+
+        # 刷新按钮
+        if st.button("  刷新美股数据", use_container_width=True):
+            st.warning("正在获取最新数据，请等待约 30 秒...")
+            progress_bar = st.progress(0, text="开始获取...")
+
+            results = refresh_us_data(dm, progress_bar)
+
+            # 显示结果
+            for symbol, result in results.items():
+                if "error" in result:
+                    st.error(f"{symbol}: {result['error']}")
+                else:
+                    st.success(f"{symbol}: ${result['price']:.2f} (写入 {result['count']} 条)")
+
             st.rerun()
 
         st.divider()
-        st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        st.caption(f"页面加载时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
     # ============================================================
     # 美股大类资产
@@ -120,7 +181,7 @@ def main():
     st.subheader("  美股大类资产")
 
     try:
-        # 从数据库获取美股数据（避免 API 限流）
+        # 从数据库获取美股数据
         us_data = get_us_asset_data(dm)
 
         if us_data:
@@ -136,9 +197,11 @@ def main():
                             symbol,
                         )
                     else:
-                        st.warning(f"{desc}: 暂无数据，请先运行数据获取脚本")
+                        st.warning(f"{desc}: 暂无数据")
+                        st.caption("点击侧边栏「刷新美股数据」获取")
         else:
-            st.warning("美股数据为空，请先运行数据获取脚本")
+            st.warning("美股数据为空")
+            st.info("请点击侧边栏「刷新美股数据」按钮获取最新数据")
 
     except Exception as e:
         st.error(f"美股数据获取失败: {e}")
