@@ -36,7 +36,7 @@ def get_data_manager():
 
 def format_price(price: float, symbol: str) -> str:
     """格式化价格显示"""
-    if symbol in ["000001", "399001", "000300"]:
+    if symbol in CN_SYMBOLS:
         return f"{price:,.2f}"
     return f"${price:,.2f}"
 
@@ -59,7 +59,7 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     closes = df["close"].tolist()
 
     # 格式化 hover 文本
-    if symbol in ["000001", "399001", "000300"]:
+    if symbol in CN_SYMBOLS:
         hovertemplate = "%{x}<br>%{y:,.2f}<extra></extra>"
     else:
         hovertemplate = "%{x}<br>$%{y:,.2f}<extra></extra>"
@@ -291,10 +291,9 @@ def main():
 
     try:
         # 从数据库获取 A 股数据（含3个月走势）
-        cn_symbols = {"000001": "上证综指", "399001": "深证成指", "000300": "沪深300"}
-        cols = st.columns(len(cn_symbols))
+        cols = st.columns(len(CN_SYMBOLS))
 
-        for col, (symbol, name) in zip(cols, cn_symbols.items()):
+        for col, (symbol, name) in zip(cols, CN_SYMBOLS.items()):
             with col:
                 data = get_asset_data_with_history(dm, symbol, name, days=90)
                 if data:
