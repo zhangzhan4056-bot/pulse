@@ -36,10 +36,13 @@ market-pulse/
 ## 数据源
 
 - **美股/ETF**: Twelve Data API (免费计划，每分钟 8 次限制)
-  - SPY (标普500), QQQ (纳指100), TLT (20年国债), CL (WTI原油)
+  - 大类资产：SPY (标普500), QQQ (纳指100), TLT (20年国债), CL (WTI原油)
+  - 板块 ETF：XLK(科技), XLF(金融), XLE(能源), XLV(医疗), XLI(工业), XLP(消费必需), XLU(公用事业), XLRE(房地产), XLB(材料), XLC(通信)
   - API key: 环境变量 `TWELVEDATA_API_KEY` 或 `~/.local/bin/finquote.conf`
 - **A股指数**: AkShare 新浪源（东方财富被墙）
   - 399006 (创业板指), 000688 (科创50), 000300 (沪深300)
+- **全球指数**: AkShare 新浪源
+  - NKY (日经225), KOSPI (韩国KOSPI)
 
 ## 开发状态
 
