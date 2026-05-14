@@ -10,39 +10,75 @@ A股 + 美股投资监控与决策辅助系统。
 
 ```
 market-pulse/
-├── app/                    # Streamlit 前端
-│   ├── pages/
-│   │   ├── 1_market_overview.py   # P1: 市场全景（盯盘）
-│   │   ├── 2_opportunity.py       # P2: 机会扫描（分析）
-│   │   ├── 3_decision.py          # P3: 操作建议（决策）
-│   │   └── 4_review.py            # P4: 复盘回顾（回顾）
-│   └── components/               # 可复用组件
+├── app.py                  # Streamlit 主入口（首页）
+├── app/                    # 前端组件
+│   └── components/
+│       └── charts.py       # Plotly 图表组件
+├── pages/                  # Streamlit 页面（必须在根目录）
+│   └── 1_market_overview.py # P1: 市场全景（盯盘）
 ├── core/                   # 核心逻辑
-│   ├── data/               # 数据获取层
-│   ├── strategy/           # 策略引擎
-│   ├── backtest/           # 回测引擎
-│   └── alert/              # 告警引擎
+│   └── data/               # 数据获取层（已完成）
+│       ├── config.py       # API key 管理、资产配置
+│       ├── base.py         # 基础获取器（重试、限流）
+│       ├── twelvedata.py   # Twelve Data API 封装
+│       ├── akshare.py      # AkShare 封装（新浪源）
+│       ├── storage.py      # SQLite 存储层
+│       └── manager.py      # DataManager 统一接口
 ├── data/                   # 本地数据缓存 (SQLite)
-├── tests/                  # 测试
-├── docs/                   # 文档
-└── scripts/                # 工具脚本
+├── scripts/                # 工具脚本
+│   └── test_data.py        # 数据层验证脚本
+└── tests/                  # 测试（待实现）
 ```
 
 ## 数据源
 
-- 美股/ETF 实时 + 历史: Twelve Data API (key 在 ~/.local/bin/finquote.conf)
-- A股数据: AkShare (东方财富)
-- 宏观数据: FRED API (美国利率、通胀等)
+- **美股/ETF**: Twelve Data API (免费计划，每分钟 8 次限制)
+  - SPY (标普500), QQQ (纳指100), TLT (20年国债), CL (WTI原油)
+  - API key: 环境变量 `TWELVEDATA_API_KEY` 或 `~/.local/bin/finquote.conf`
+- **A股指数**: AkShare 新浪源（东方财富被墙）
+  - 000001 (上证综指), 399001 (深证成指), 000300 (沪深300)
+
+## 开发状态
+
+### 已完成
+- [x] 数据获取层 (core/data/)
+- [x] P1 市场全景页面 (pages/1_market_overview.py)
+
+### 待开发
+- [ ] P2 机会扫描页面
+- [ ] P3 操作建议页面
+- [ ] P4 复盘回顾页面
+- [ ] 策略引擎 (core/strategy/)
+- [ ] 回测引擎 (core/backtest/)
+- [ ] 告警引擎 (core/alert/)
+
+## 运行方式
+
+```bash
+# 安装依赖
+pip3 install -r requirements.txt
+
+# 设置 API key
+export TWELVEDATA_API_KEY="your_key"
+
+# 启动应用
+streamlit run app.py
+```
 
 ## 开发规范
 
-- Python 3.9+
-- 前端: Streamlit
+- Python 3.9+（不支持 `str | None`，用 `Optional[str]`）
+- 前端: Streamlit（pages 目录必须在项目根目录）
 - 图表: Plotly
-- 数据库: SQLite (起步) → PostgreSQL (规模大了)
-- 版本控制: git，每次功能完成提交
+- 数据库: SQLite
+- 版本控制: git，功能分支开发后合并
 - 提交信息格式: `feat: xxx` / `fix: xxx` / `docs: xxx`
-- 不在 main 分支直接开发，功能分支开发后合并
+
+## 已知限制
+
+- Twelve Data 免费计划：每分钟 8 次请求，页面只能从数据库读取
+- AkShare 东方财富源被墙，使用新浪源
+- plotly 导出图片需要 kaleido 包
 
 ## 风控红线
 
