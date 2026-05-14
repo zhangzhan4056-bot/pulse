@@ -313,3 +313,258 @@ def calc_correlation_matrix(
         corr = price_df.corr()
 
     return corr.round(2)
+
+
+# ============================================================
+# 市场环境判断（Regime Detection）
+# ============================================================
+
+
+def detect_market_regime(
+    spy_close: pd.Series,
+    tlt_close: pd.Series,
+    cl_close: pd.Series,
+) -> Dict[str, str]:
+    """判断当前市场环境
+
+    基于 SPY/TLT/CL 的相对动量和趋势，判断市场处于哪种状态。
+
+    逻辑：
+    - 风险偏好（Risk-On）：SPY 动量强于 TLT，股市上涨
+    - 避险（Risk-Off）：TLT 动量强于 SPY，资金流向债市
+    - 滞胀担忧：CL 大涨 + SPY 走弱，通胀压力
+    - 危机：SPY 和 CL 同时大跌
+
+    Returns:
+        {
+            "regime": "风险偏好" / "避险" / "滞胀担忧" / "危机" / "震荡",
+            "description": 状态描述,
+            "spy_score": SPY 动量评分,
+            "tlt_score": TLT 动量评分,
+            "cl_score": CL 动量评分,
+        }
+    """
+    spy_score = calc_momentum_score(spy_close) or 50
+    tlt_score = calc_momentum_score(tlt_close) or 50
+    cl_score = calc_momentum_score(cl_close) or 50
+
+    spy_dd = calc_current_drawdown(spy_close)
+
+    # 判断环境
+    if spy_dd < -15:
+        regime = "危机"
+        description = "美股大幅回撤，市场恐慌，建议降低仓位"
+    elif spy_score > tlt_score + 15 and spy_score > 60:
+        regime = "风险偏好"
+        description = "资金流向股市，风险资产表现强劲，可增加卫星仓位"
+    elif tlt_score > spy_score + 15 and tlt_score > 55:
+        regime = "避险"
+        description = "资金流向债市，市场避险情绪升温，建议防守为主"
+    elif cl_score > 70 and spy_score < 50:
+        regime = "滞胀担忧"
+        description = "油价走强但股市疲软，通胀压力上升，关注货币政策"
+    elif abs(spy_score - tlt_score) < 10 and spy_score > 40 and spy_score < 60:
+        regime = "震荡"
+        description = "市场方向不明，股债相关性低，建议观望"
+    else:
+        regime = "中性"
+        description = "市场无明显偏向，维持常规配置"
+
+    return {
+        "regime": regime,
+        "description": description,
+        "spy_score": round(spy_score, 1),
+        "tlt_score": round(tlt_score, 1),
+        "cl_score": round(cl_score, 1),
+    }
+
+
+# ============================================================
+# 核心卫星策略
+# ============================================================
+
+# 资产角色定义
+CORE_ASSETS = ["SPY", "TLT"]  # 核心资产：长期持有
+SATELLITE_ASSETS = ["QQQ", "CL", "000001", "399001", "000300"]  # 卫星资产：动态轮动
+
+
+def calc_core_satellite_allocation(
+    regime: str,
+    momentum_scores: Dict[str, float],
+) -> Dict[str, Dict[str, float]]:
+    """计算核心卫星配置建议
+
+    根据市场环境和动量评分，给出具体配置比例。
+
+    Args:
+        regime: 市场环境（"风险偏好"/"避险"/"危机" 等）
+        momentum_scores: {symbol: 动量评分}
+
+    Returns:
+        {
+            "core": {"SPY": 40, "TLT": 30},      # 核心仓位
+            "satellite": {"QQQ": 20, "CL": 10},   # 卫星仓位
+            "cash": 0,                              # 现金比例
+            "total": 100,
+        }
+    """
+    # 基础配置
+    if regime == "危机":
+        # 危机模式：大幅减仓，保留现金
+        core_pct = 40
+        satellite_pct = 10
+        cash_pct = 50
+    elif regime == "避险":
+        # 避险模式：核心偏债，卫星极少
+        core_pct = 60
+        satellite_pct = 10
+        cash_pct = 30
+    elif regime == "风险偏好":
+        # 风险偏好：核心正常，卫星满配
+        core_pct = 60
+        satellite_pct = 35
+        cash_pct = 5
+    elif regime == "滞胀担忧":
+        # 滞胀：核心偏债，卫星配商品
+        core_pct = 50
+        satellite_pct = 20
+        cash_pct = 30
+    else:
+        # 中性/震荡：常规配置
+        core_pct = 60
+        satellite_pct = 25
+        cash_pct = 15
+
+    # 核心资产分配（SPY:TLT 比例根据环境调整）
+    if regime in ["避险", "危机"]:
+        # 避险时核心偏债
+        spy_pct = core_pct * 0.3
+        tlt_pct = core_pct * 0.7
+    elif regime == "风险偏好":
+        # 风险偏好时核心偏股
+        spy_pct = core_pct * 0.65
+        tlt_pct = core_pct * 0.35
+    else:
+        # 常规 50:50
+        spy_pct = core_pct * 0.5
+        tlt_pct = core_pct * 0.5
+
+    # 卫星资产分配（按动量排名，取前 2-3 个）
+    satellite_scores = {
+        s: momentum_scores.get(s, 0) for s in SATELLITE_ASSETS
+    }
+    # 按动量排序
+    ranked = sorted(satellite_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # 只配置动量 > 50 的卫星资产
+    active_satellites = [(s, score) for s, score in ranked if score > 50]
+
+    satellite_alloc = {}
+    if active_satellites and satellite_pct > 0:
+        # 按动量加权分配
+        total_score = sum(score for _, score in active_satellites)
+        for symbol, score in active_satellites:
+            weight = score / total_score
+            alloc = round(satellite_pct * weight, 1)
+            satellite_alloc[symbol] = alloc
+
+    return {
+        "core": {
+            "SPY": round(spy_pct, 1),
+            "TLT": round(tlt_pct, 1),
+        },
+        "satellite": satellite_alloc,
+        "cash": cash_pct,
+        "total": 100,
+    }
+
+
+def generate_rotation_signals(
+    momentum_scores: Dict[str, float],
+    prev_scores: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, str]]:
+    """生成卫星轮动信号
+
+    当卫星资产的动量排名发生变化，或穿越阈值时触发信号。
+
+    Args:
+        momentum_scores: 当前动量评分
+        prev_scores: 上期动量评分（用于检测变化）
+
+    Returns:
+        信号列表，每项包含：
+        {
+            "action": "买入" / "卖出" / "关注",
+            "symbol": 资产代码,
+            "reason": 原因,
+            "strength": "强" / "中" / "弱",
+        }
+    """
+    signals = []
+
+    # 获取卫星资产的动量
+    satellite_scores = {
+        s: momentum_scores.get(s, 0) for s in SATELLITE_ASSETS
+    }
+
+    # 按动量排序
+    ranked = sorted(satellite_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # 检查穿越阈值的信号
+    for symbol, score in ranked:
+        if score >= 70:
+            signals.append({
+                "action": "买入",
+                "symbol": symbol,
+                "reason": f"动量强劲（{score:.0f}分），趋势向好",
+                "strength": "强" if score >= 80 else "中",
+            })
+        elif score >= 60:
+            signals.append({
+                "action": "关注",
+                "symbol": symbol,
+                "reason": f"动量偏强（{score:.0f}分），可小仓位试探",
+                "strength": "中",
+            })
+        elif score <= 30:
+            signals.append({
+                "action": "卖出",
+                "symbol": symbol,
+                "reason": f"动量疲弱（{score:.0f}分），趋势向下",
+                "strength": "强" if score <= 20 else "中",
+            })
+        elif score <= 40:
+            signals.append({
+                "action": "关注",
+                "symbol": symbol,
+                "reason": f"动量偏弱（{score:.0f}分），注意风险",
+                "strength": "弱",
+            })
+
+    # 如果有上期数据，检测排名变化
+    if prev_scores:
+        prev_ranked = sorted(
+            prev_scores.items(), key=lambda x: x[1], reverse=True
+        )
+        curr_ranked = ranked
+
+        prev_top = [s for s, _ in prev_ranked[:2]]
+        curr_top = [s for s, _ in curr_ranked[:2]]
+
+        # 检测新的领头资产
+        for symbol in curr_top:
+            if symbol not in prev_top:
+                curr_score = momentum_scores.get(symbol, 0)
+                if curr_score > 60:
+                    signals.append({
+                        "action": "轮动",
+                        "symbol": symbol,
+                        "reason": f"动量排名上升，进入卫星仓位候选",
+                        "strength": "中",
+                    })
+
+    # 按强度排序
+    strength_order = {"强": 0, "中": 1, "弱": 2}
+    signals.sort(key=lambda x: strength_order.get(x["strength"], 99))
+
+    return signals

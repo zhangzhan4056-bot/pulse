@@ -16,4 +16,9 @@ from core.strategy.indicators import (
     calc_volatility,
     calc_atr,
     calc_correlation_matrix,
+    detect_market_regime,
+    calc_core_satellite_allocation,
+    generate_rotation_signals,
+    CORE_ASSETS,
+    SATELLITE_ASSETS,
 )

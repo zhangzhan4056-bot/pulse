@@ -28,6 +28,11 @@ from core.strategy.indicators import (
     calc_volatility,
     calc_correlation_matrix,
     calc_drawdown,
+    detect_market_regime,
+    calc_core_satellite_allocation,
+    generate_rotation_signals,
+    CORE_ASSETS,
+    SATELLITE_ASSETS,
 )
 from app.components.charts import (
     create_indicator_chart,
@@ -300,9 +305,110 @@ def generate_signals(data: Dict[str, pd.DataFrame]) -> list:
     return signals
 
 
+def render_regime_card(regime: dict):
+    """渲染市场环境卡片"""
+    regime_name = regime["regime"]
+    # 环境颜色
+    colors = {
+        "风险偏好": "#ef5350",
+        "避险": "#2196f3",
+        "危机": "#f44336",
+        "滞胀担忧": "#ff9800",
+        "震荡": "#9e9e9e",
+        "中性": "#999",
+    }
+    color = colors.get(regime_name, "#999")
+
+    st.markdown(
+        f"""
+        <div style="
+            border-radius: 0.5rem;
+            border: 2px solid {color};
+            background: white;
+            padding: 1.2rem;
+            margin-bottom: 1rem;
+        ">
+            <div style="display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.6rem;">
+                <span style="font-size: 1.5rem;"> </span>
+                <span style="font-size: 1.3rem; font-weight: bold; color: {color};">{regime_name}</span>
+            </div>
+            <div style="font-size: 0.95rem; color: #555; margin-bottom: 0.8rem;">{regime["description"]}</div>
+            <div style="display: flex; gap: 1.5rem; font-size: 0.85rem; color: #666;">
+                <span>SPY 动量: <b>{regime["spy_score"]}</b></span>
+                <span>TLT 动量: <b>{regime["tlt_score"]}</b></span>
+                <span>CL 动量: <b>{regime["cl_score"]}</b></span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_allocation_card(allocation: dict, all_symbols: dict):
+    """渲染核心卫星配置建议卡片"""
+    core = allocation["core"]
+    satellite = allocation["satellite"]
+    cash = allocation["cash"]
+
+    # 构建配置表格
+    rows = []
+    for symbol, pct in core.items():
+        name = all_symbols.get(symbol, symbol)
+        rows.append({"类别": "核心", "资产": name, "代码": symbol, "比例": f"{pct}%"})
+    for symbol, pct in satellite.items():
+        name = all_symbols.get(symbol, symbol)
+        rows.append({"类别": "卫星", "资产": name, "代码": symbol, "比例": f"{pct}%"})
+    if cash > 0:
+        rows.append({"类别": "现金", "资产": "现金", "代码": "-", "比例": f"{cash}%"})
+
+    df = pd.DataFrame(rows)
+
+    st.markdown("**核心卫星配置建议**")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_rotation_signals(signals: list, all_symbols: dict):
+    """渲染轮动信号"""
+    if not signals:
+        st.info("当前无轮动信号")
+        return
+
+    for sig in signals:
+        action = sig["action"]
+        symbol = sig["symbol"]
+        name = all_symbols.get(symbol, symbol)
+        reason = sig["reason"]
+        strength = sig["strength"]
+
+        # 颜色和图标
+        if action == "买入":
+            icon = " "
+            color = "success"
+        elif action == "卖出":
+            icon = " "
+            color = "error"
+        elif action == "轮动":
+            icon = " "
+            color = "warning"
+        else:
+            icon = " "
+            color = "info"
+
+        text = f"{icon} **{action} {name}**（{strength}信号）— {reason}"
+
+        if color == "success":
+            st.success(text)
+        elif color == "error":
+            st.error(text)
+        elif color == "warning":
+            st.warning(text)
+        else:
+            st.info(text)
+
+
 def main():
     st.title("  机会扫描")
-    st.caption("基于双重动量策略的大类资产分析")
+    st.caption("基于双重动量+核心卫星策略的大类资产分析")
 
     dm = get_data_manager()
 
@@ -315,6 +421,45 @@ def main():
         return
 
     all_symbols = {**US_SYMBOLS, **CN_SYMBOLS}
+
+    # ============================================================
+    # 市场环境判断
+    # ============================================================
+    st.subheader("  市场环境")
+
+    if "SPY" in data and "TLT" in data and "CL" in data:
+        regime = detect_market_regime(
+            data["SPY"]["close"],
+            data["TLT"]["close"],
+            data["CL"]["close"],
+        )
+        render_regime_card(regime)
+    else:
+        regime = {"regime": "中性", "description": "数据不足，无法判断"}
+        st.warning("缺少 SPY/TLT/CL 数据，无法判断市场环境")
+
+    st.divider()
+
+    # ============================================================
+    # 核心卫星配置
+    # ============================================================
+    st.subheader("  核心卫星配置")
+
+    # 计算所有资产动量评分
+    momentum_scores = {}
+    for symbol, df in data.items():
+        score = calc_momentum_score(df["close"])
+        momentum_scores[symbol] = score if score else 50
+
+    allocation = calc_core_satellite_allocation(regime["regime"], momentum_scores)
+    render_allocation_card(allocation, all_symbols)
+
+    # 轮动信号
+    st.markdown("**卫星轮动信号**")
+    rotation_signals = generate_rotation_signals(momentum_scores)
+    render_rotation_signals(rotation_signals, all_symbols)
+
+    st.divider()
 
     # ============================================================
     # 动量排名
