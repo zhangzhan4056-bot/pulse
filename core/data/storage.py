@@ -3,7 +3,7 @@
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -140,6 +140,28 @@ class DataStorage:
             )
             result = cursor.fetchone()
             return result[0] if result and result[0] else None
+
+    def get_earliest_dates(self, symbols: list) -> Dict[str, Optional[str]]:
+        """批量获取多个 symbol 的最早日期
+
+        Returns:
+            dict: {symbol: "YYYY-MM-DD" or None}
+        """
+        if not symbols:
+            return {}
+        placeholders = ",".join("?" for _ in symbols)
+        query = f"""
+            SELECT symbol, MIN(date) as earliest
+            FROM price_daily
+            WHERE symbol IN ({placeholders})
+            GROUP BY symbol
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(query, symbols)
+            rows = cursor.fetchall()
+            result = {row[0]: row[1] for row in rows}
+        # 没有数据的 symbol 返回 None
+        return {s: result.get(s) for s in symbols}
 
     def get_stats(self) -> pd.DataFrame:
         """获取数据库统计信息"""

@@ -22,7 +22,7 @@ INDEX_CODE_MAP = {
 
 # 全球指数代码映射（symbol -> AkShare 中文名称）
 GLOBAL_INDEX_MAP = {
-    "NKY": "日经225指数",
+    "日经225": "日经225指数",
     "KOSPI": "首尔综合指数",
 }
 
@@ -75,7 +75,7 @@ class AkShareFetcher:
         """获取全球指数历史数据（使用新浪源）
 
         Args:
-            symbol: 指数代码，如 NKY (日经225), KOSPI (韩国)
+            symbol: 指数代码，如 日经225, KOSPI (韩国)
 
         Returns:
             DataFrame: 标准化列名 (date, open, high, low, close, volume)

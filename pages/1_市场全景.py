@@ -59,15 +59,19 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
     closes = df["close"].tolist()
 
-    # 格式化 hover 文本
+    # 计算涨跌幅（以第一天为基准）
+    base_price = closes[0]
+    pct_changes = [(p / base_price - 1) * 100 for p in closes]
+
+    # 格式化 hover 文本（显示涨跌幅 + 实际价格）
     if symbol in CN_SYMBOLS or symbol in GLOBAL_SYMBOLS:
-        hovertemplate = "%{x}<br>%{y:,.2f}<extra></extra>"
+        hovertemplate = "%{x}<br>涨跌幅: %{y:.2f}%<br>价格: %{customdata:,.2f}<extra></extra>"
     else:
-        hovertemplate = "%{x}<br>$%{y:,.2f}<extra></extra>"
+        hovertemplate = "%{x}<br>涨跌幅: %{y:.2f}%<br>价格: $%{customdata:,.2f}<extra></extra>"
 
     # 计算 Y 轴范围（极值区间 + 5% padding）
-    y_min = min(closes)
-    y_max = max(closes)
+    y_min = min(pct_changes)
+    y_max = max(pct_changes)
     y_padding = (y_max - y_min) * 0.05
 
     fig = go.Figure()
@@ -75,7 +79,8 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     fig.add_trace(
         go.Scatter(
             x=dates,
-            y=closes,
+            y=pct_changes,
+            customdata=closes,
             mode="lines",
             line=dict(color=color, width=2),
             showlegend=False,
@@ -84,21 +89,22 @@ def create_sparkline(df: pd.DataFrame, color: str, symbol: str) -> go.Figure:
     )
 
     fig.update_layout(
-        height=120,
+        height=240,
         margin=dict(l=40, r=10, t=5, b=25),
         xaxis=dict(
             visible=True,
             showgrid=False,
             showticklabels=True,
             tickformat="%m/%d",
-            tickfont=dict(size=8, color="#999"),
+            tickfont=dict(size=16, color="#999"),
         ),
         yaxis=dict(
             visible=True,
             showgrid=True,
             gridcolor="rgba(0,0,0,0.05)",
             showticklabels=True,
-            tickfont=dict(size=8, color="#999"),
+            tickfont=dict(size=16, color="#999"),
+            ticksuffix="%",
             range=[y_min - y_padding, y_max + y_padding],
             side="right",
         ),

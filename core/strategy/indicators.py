@@ -284,6 +284,53 @@ def calc_atr(
     return atr
 
 
+def calc_adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """ADX 平均趋向指数（趋势强度指标）
+
+    ADX > 25: 趋势明确
+    ADX < 20: 无趋势（震荡）
+    20-25: 过渡区
+
+    Args:
+        high: 最高价序列
+        low: 最低价序列
+        close: 收盘价序列
+        period: 计算周期，默认 14
+
+    Returns:
+        ADX 序列
+    """
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+
+    # 方向运动
+    plus_dm = high - prev_high
+    minus_dm = prev_low - low
+
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+
+    # ATR
+    atr = calc_atr(high, low, close, period)
+
+    # 平滑的方向指标
+    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+
+    # DX 和 ADX
+    di_sum = plus_di + minus_di
+    di_diff = (plus_di - minus_di).abs()
+    dx = 100 * (di_diff / di_sum)
+    adx = dx.rolling(window=period).mean()
+
+    return adx
+
+
 # ============================================================
 # 相关性
 # ============================================================
@@ -572,3 +619,128 @@ def generate_rotation_signals(
     signals.sort(key=lambda x: strength_order.get(x["strength"], 99))
 
     return signals
+
+
+# ============================================================
+# CVaR / 尾部风险
+# ============================================================
+
+
+def calc_cvar(close: pd.Series, window: int = 252, alpha: float = 0.05) -> float:
+    """计算条件风险价值 (CVaR / Expected Shortfall)
+
+    CVaR = 尾部 alpha 分位数以下损失的期望值。
+    比最大回撤更稳健，比波动率更关注极端损失。
+
+    Args:
+        close: 收盘价序列
+        window: 计算窗口，默认 252 个交易日
+        alpha: 尾部概率，默认 5%（最差 5% 的平均损失）
+
+    Returns:
+        年化 CVaR（正值，如 15.0 表示尾部 5% 的平均损失为 15%）
+    """
+    returns = close.pct_change().dropna()
+    if len(returns) < max(window * 0.8, 20):  # 允许 20% 数据缺失
+        return 0.0
+    recent = returns.tail(window)
+    # VaR: alpha 分位数
+    var = recent.quantile(alpha)
+    # CVaR: 尾部低于 VaR 的收益的平均值
+    tail = recent[recent <= var]
+    if len(tail) == 0:
+        return 0.0
+    cvar = -tail.mean() * np.sqrt(252) * 100
+    return round(cvar, 2)
+
+
+def calc_expected_return(close: pd.Series, window: int = 252) -> float:
+    """计算年化预期收益率（历史均值外推）
+
+    Args:
+        close: 收盘价序列
+        window: 计算窗口
+
+    Returns:
+        年化预期收益率（百分比）
+    """
+    returns = close.pct_change().dropna()
+    if len(returns) < window:
+        return 0.0
+    mean_daily = returns.tail(window).mean()
+    annual = mean_daily * 252 * 100
+    return round(annual, 2)
+
+
+def calc_regime_score(spy_close: pd.Series) -> Dict[str, float]:
+    """计算 GEM 宏观状态综合评分
+
+    基于三个维度：
+    1. 趋势：SPY 价格 vs 200 日均线
+    2. 动量：12 个月收益率
+    3. 波动率：当前波动率 vs 历史中位数
+
+    Returns:
+        {
+            "trend": 趋势信号 (1=看涨, -1=看跌, 0=中性),
+            "momentum": 12 个月收益率 (%),
+            "vol_regime": 波动率状态 ("低波" / "正常" / "高波"),
+            "composite": 综合评分 (0-100),
+        }
+    """
+    if len(spy_close) < 200:
+        return {"trend": 0, "momentum": 0.0, "vol_regime": "正常", "composite": 50.0}
+
+    # 趋势：价格 vs 200 日均线
+    ma200 = spy_close.rolling(200).mean().iloc[-1]
+    price = spy_close.iloc[-1]
+    trend = 1 if price > ma200 else -1
+
+    # 动量：12 个月收益率
+    if len(spy_close) >= 252:
+        momentum = (spy_close.iloc[-1] / spy_close.iloc[-252] - 1) * 100
+    else:
+        momentum = 0.0
+
+    # 波动率状态
+    returns = spy_close.pct_change().dropna()
+    if len(returns) >= 60:
+        current_vol = returns.tail(20).std() * np.sqrt(252) * 100
+        hist_vol = returns.rolling(60).std() * np.sqrt(252) * 100
+        median_vol = hist_vol.median()
+        if current_vol > median_vol * 1.5:
+            vol_regime = "高波"
+        elif current_vol < median_vol * 0.7:
+            vol_regime = "低波"
+        else:
+            vol_regime = "正常"
+    else:
+        vol_regime = "正常"
+        current_vol = 0
+
+    # 综合评分
+    score = 50  # 基准
+    score += trend * 15  # 趋势 ±15
+    # 动量映射
+    if momentum > 20:
+        score += 20
+    elif momentum > 10:
+        score += 10
+    elif momentum > 0:
+        score += 5
+    elif momentum > -10:
+        score -= 10
+    else:
+        score -= 20
+    # 波动率
+    if vol_regime == "高波":
+        score -= 15
+    elif vol_regime == "低波":
+        score += 5
+
+    return {
+        "trend": trend,
+        "momentum": round(momentum, 2),
+        "vol_regime": vol_regime,
+        "composite": max(0, min(100, round(score, 1))),
+    }

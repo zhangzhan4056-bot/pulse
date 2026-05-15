@@ -117,6 +117,53 @@ class DataManager:
             "sectors": self.fetch_us_sectors(),
         }
 
+    def prefetch_for_backtest(self, min_days: int) -> None:
+        """预取回测所需的历史数据（按需补充）
+
+        检查数据库中各 symbol 的最早日期，不足则从 API 补充。
+        仅补充 Twelve Data 源（美股/ETF），AkShare 源返回全部历史。
+
+        Args:
+            min_days: 回测需要的最少历史天数（含预热期）
+        """
+        from datetime import datetime, timedelta
+
+        cutoff = (datetime.now() - timedelta(days=min_days)).strftime("%Y-%m-%d")
+
+        # 检查 US 符号的数据覆盖情况
+        all_symbols = list(US_SYMBOLS.keys()) + list(US_SECTORS_SYMBOLS.keys())
+        earliest = self.storage.get_earliest_dates(all_symbols)
+
+        # 找出缺失或不足的 symbol
+        missing = []
+        for symbol in all_symbols:
+            first = earliest.get(symbol)
+            if first is None or first > cutoff:
+                missing.append(symbol)
+
+        if not missing:
+            logger.info("数据已满足回测要求，无需预取")
+            return
+
+        logger.info(f"需预取 {len(missing)} 个 US symbol，目标 {min_days} 天")
+
+        # 用日期范围获取数据（比 outputsize 更可靠，能拿到更多历史）
+        start = cutoff  # 从截止日期开始获取
+        end = datetime.now().strftime("%Y-%m-%d")
+
+        for i, symbol in enumerate(missing):
+            if i > 0:
+                import time
+                time.sleep(1)  # 遵守速率限制
+            try:
+                df = self.twelvedata.get_time_series(
+                    symbol, start_date=start, end_date=end
+                )
+                count = self.storage.save(df, symbol, "twelvedata")
+                logger.info(f"预取 {symbol} 完成，写入 {count} 条")
+            except Exception as e:
+                logger.error(f"预取 {symbol} 失败: {e}")
+
     def load(
         self,
         symbol: str,
