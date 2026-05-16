@@ -265,6 +265,18 @@ def main():
     stats = dm.get_stats()
     db_empty = stats.empty
 
+    # 数据库为空时自动触发获取（仅触发一次）
+    if db_empty and "data_fetch_triggered" not in st.session_state:
+        st.session_state["data_fetch_triggered"] = True
+        st.info("首次使用，正在自动获取数据（美股限速，约 3 分钟）...")
+        progress_bar = st.progress(0, text="开始获取...")
+        try:
+            results = refresh_all_data(dm, progress_bar)
+            st.rerun()
+        except Exception as e:
+            st.error(f"自动获取失败: {e}")
+            st.caption("请在侧边栏点击「一键获取所有数据」重试")
+
     # 侧边栏：数据控制
     with st.sidebar:
         st.subheader("数据控制")
