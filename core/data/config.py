@@ -8,9 +8,19 @@ def get_api_key() -> str:
     """获取 Twelve Data API key
 
     优先级：
-    1. 环境变量 TWELVEDATA_API_KEY
-    2. ~/.local/bin/finquote.conf
+    1. Streamlit secrets (st.secrets["TWELVEDATA_API_KEY"])
+    2. 环境变量 TWELVEDATA_API_KEY
+    3. ~/.local/bin/finquote.conf
     """
+    # Streamlit Cloud secrets
+    try:
+        import streamlit as st
+        key = st.secrets.get("TWELVEDATA_API_KEY")
+        if key:
+            return key
+    except (ImportError, AttributeError, FileNotFoundError):
+        pass
+
     # 环境变量
     key = os.environ.get("TWELVEDATA_API_KEY")
     if key:
@@ -28,7 +38,7 @@ def get_api_key() -> str:
 
     raise ValueError(
         "未找到 Twelve Data API key。"
-        "请设置环境变量 TWELVEDATA_API_KEY 或创建 ~/.local/bin/finquote.conf"
+        "请在 Streamlit Cloud Settings → Secrets 中配置 TWELVEDATA_API_KEY"
     )
 
 
