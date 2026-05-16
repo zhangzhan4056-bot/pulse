@@ -184,11 +184,12 @@ class DataManager:
             except Exception as e:
                 logger.error(f"预取全球指数失败: {e}")
 
-        # 3. 预取美股/ETF（Twelve Data，限速，按日期范围获取）
+        # 3. 预取美股/ETF（Twelve Data，限速，用 outputsize 获取更多历史）
+        # 注意：Twelve Data 免费计划用 start_date/end_date 只返回约 2 年数据，
+        # 用 outputsize 可以返回更多历史。min_days 换算成交易日。
         if missing_us:
-            logger.info(f"需预取 {len(missing_us)} 个 US symbol，目标 {min_days} 天")
-            start = cutoff
-            end = datetime.now().strftime("%Y-%m-%d")
+            trading_days_needed = max(250, int(min_days * 252 / 365))
+            logger.info(f"需预取 {len(missing_us)} 个 US symbol，目标 {trading_days_needed} 个交易日")
 
             for i, symbol in enumerate(missing_us):
                 if i > 0:
@@ -196,7 +197,7 @@ class DataManager:
                     time.sleep(1)  # 遵守速率限制
                 try:
                     df = self.twelvedata.get_time_series(
-                        symbol, start_date=start, end_date=end
+                        symbol, outputsize=trading_days_needed
                     )
                     count = self.storage.save(df, symbol, "twelvedata")
                     logger.info(f"预取 {symbol} 完成，写入 {count} 条")

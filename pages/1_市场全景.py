@@ -211,7 +211,7 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
             progress_bar.progress(
                 i / 30, text=f"美股 {symbol} ({i+1}/{len(us_symbols)})..."
             )
-            df = dm.twelvedata.get_time_series(symbol, outputsize=250)
+            df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
             count = dm.storage.save(df, symbol, "twelvedata")
             results["us"][symbol] = count
             if i < len(us_symbols) - 1:
@@ -227,7 +227,7 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
                 (len(us_symbols) + i) / 30,
                 text=f"板块 {symbol} ({i+1}/{len(sector_symbols)})...",
             )
-            df = dm.twelvedata.get_time_series(symbol, outputsize=250)
+            df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
             count = dm.storage.save(df, symbol, "twelvedata")
             results["sectors"][symbol] = count
             if i < len(sector_symbols) - 1:
