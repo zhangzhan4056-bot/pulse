@@ -105,3 +105,6 @@ streamlit run app.py
 - **Python 3.9 兼容**：不支持 `str | None`，用 `Optional[str]`
 - **Streamlit pages 目录必须在项目根目录**：不能嵌套在 app/ 下
 - **API key 配置文件格式**：`finquote.conf` 是 `key=value` 带注释，不能直接读整行当 key
+- **Twelve Data `start_date/end_date` 参数有隐藏限制**：免费计划用日期范围参数只返回约 2 年数据，必须用 `outputsize` 参数才能拿到更长历史（本地数据是用 `outputsize` 积累的，线上用 `start_date` 会截断）
+- **Streamlit Cloud 数据库是临时的**：每次重启丢失，P1 的「一键获取」和 P3 的 `prefetch_for_backtest()` 都必须覆盖所有数据源（美股+A股+全球），不能只处理一种
+- **改完代码必须本地三个页面都跑一遍再 push**：不能只跑 P1 就认为没问题，P3 的 `st.columns(3)` 硬编码 bug 本地跑 P3 就能发现
