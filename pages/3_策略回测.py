@@ -324,7 +324,7 @@ def main():
 
         # 展示分类知识卡片
         st.subheader("策略分类速查")
-        cols = st.columns(3)
+        cols = st.columns(len(CATEGORY_ORDER))
         for i, cat_key in enumerate(CATEGORY_ORDER):
             cat = STRATEGY_CATEGORIES[cat_key]
             with cols[i]:
