@@ -198,33 +198,58 @@ def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: i
     }
 
 
-def refresh_us_data(dm: DataManager, progress_bar) -> dict:
-    """从 API 获取最新美股数据（近1年）"""
+def refresh_all_data(dm: DataManager, progress_bar) -> dict:
+    """从 API 获取所有资产数据"""
     import time
 
-    results = {}
-    symbols = list(US_SYMBOLS.keys())
+    results = {"us": {}, "cn": {}, "global": {}, "sectors": {}}
 
-    for i, symbol in enumerate(symbols):
+    # 1. 美股大类资产（Twelve Data，限速 8 次/分钟）
+    us_symbols = list(US_SYMBOLS.keys())
+    for i, symbol in enumerate(us_symbols):
         try:
-            # 更新进度
-            progress_bar.progress((i) / len(symbols), text=f"获取 {symbol}...")
-
-            # 获取最新价格
-            price = dm.twelvedata.get_latest_price(symbol)
-
-            # 获取近1年历史数据（约250个交易日）
+            progress_bar.progress(
+                i / 30, text=f"美股 {symbol} ({i+1}/{len(us_symbols)})..."
+            )
             df = dm.twelvedata.get_time_series(symbol, outputsize=250)
             count = dm.storage.save(df, symbol, "twelvedata")
-
-            results[symbol] = {"price": price, "count": count}
-
-            # 等待 8 秒（确保不超过每分钟 8 次限制）
-            if i < len(symbols) - 1:
+            results["us"][symbol] = count
+            if i < len(us_symbols) - 1:
                 time.sleep(8)
-
         except Exception as e:
-            results[symbol] = {"error": str(e)}
+            results["us"][symbol] = f"错误: {e}"
+
+    # 2. 美股板块 ETF（Twelve Data）
+    sector_symbols = list(US_SECTORS_SYMBOLS.keys())
+    for i, symbol in enumerate(sector_symbols):
+        try:
+            progress_bar.progress(
+                (len(us_symbols) + i) / 30,
+                text=f"板块 {symbol} ({i+1}/{len(sector_symbols)})...",
+            )
+            df = dm.twelvedata.get_time_series(symbol, outputsize=250)
+            count = dm.storage.save(df, symbol, "twelvedata")
+            results["sectors"][symbol] = count
+            if i < len(sector_symbols) - 1:
+                time.sleep(8)
+        except Exception as e:
+            results["sectors"][symbol] = f"错误: {e}"
+
+    # 3. A股指数（AkShare，无严格限速）
+    progress_bar.progress(0.7, text="获取 A 股指数...")
+    try:
+        cn_results = dm.fetch_cn_assets()
+        results["cn"] = cn_results
+    except Exception as e:
+        results["cn"] = {"error": str(e)}
+
+    # 4. 全球指数（AkShare）
+    progress_bar.progress(0.85, text="获取亚太指数...")
+    try:
+        global_results = dm.fetch_global_assets()
+        results["global"] = global_results
+    except Exception as e:
+        results["global"] = {"error": str(e)}
 
     progress_bar.progress(1.0, text="完成")
     return results
@@ -236,6 +261,10 @@ def main():
 
     dm = get_data_manager()
 
+    # 检查数据库是否有数据
+    stats = dm.get_stats()
+    db_empty = stats.empty
+
     # 侧边栏：数据控制
     with st.sidebar:
         st.subheader("数据控制")
@@ -244,20 +273,25 @@ def main():
         last_updated = get_data_last_updated(dm)
         st.caption(f"数据更新至: {last_updated}")
 
-        # 刷新按钮
-        if st.button("  刷新美股数据", use_container_width=True):
-            st.warning("正在获取近1年历史数据，请等待约 40 秒...")
+        # 一键获取按钮
+        if st.button("  一键获取所有数据", use_container_width=True, type="primary"):
+            st.warning("首次获取需要约 3 分钟（美股限速），请耐心等待...")
             progress_bar = st.progress(0, text="开始获取...")
 
-            results = refresh_us_data(dm, progress_bar)
+            results = refresh_all_data(dm, progress_bar)
 
-            # 显示结果
-            for symbol, result in results.items():
-                if "error" in result:
-                    st.error(f"{symbol}: {result['error']}")
-                else:
-                    st.success(f"{symbol}: ${result['price']:.2f} (写入 {result['count']} 条)")
+            # 统计结果
+            us_ok = sum(1 for v in results["us"].values() if isinstance(v, int) and v > 0)
+            sectors_ok = sum(1 for v in results["sectors"].values() if isinstance(v, int) and v > 0)
+            cn_ok = sum(1 for v in results.get("cn", {}).values() if isinstance(v, int) and v > 0)
+            global_ok = sum(1 for v in results.get("global", {}).values() if isinstance(v, int) and v > 0)
 
+            st.success(
+                f"美股 {us_ok}/{len(US_SYMBOLS)} | "
+                f"板块 {sectors_ok}/{len(US_SECTORS_SYMBOLS)} | "
+                f"A股 {cn_ok}/{len(CN_SYMBOLS)} | "
+                f"亚太 {global_ok}/{len(GLOBAL_SYMBOLS)}"
+            )
             st.rerun()
 
         st.divider()
@@ -268,26 +302,27 @@ def main():
     # ============================================================
     st.subheader("  美股大类资产")
 
-    try:
-        # 从数据库获取美股数据（含3个月走势）
-        cols = st.columns(len(US_SYMBOLS))
-        for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
-            with col:
-                data = get_asset_data_with_history(dm, symbol, desc, days=90)
-                if data:
-                    render_asset_card(
-                        data["desc"],
-                        data["price"],
-                        data["change_pct"],
-                        symbol,
-                        sparkline_df=data["history"],
-                    )
-                else:
-                    st.warning(f"{desc}: 暂无数据")
-                    st.caption("点击侧边栏「刷新美股数据」获取")
+    if db_empty:
+        st.info("首次使用请点击侧边栏「一键获取所有数据」，约 3 分钟完成")
+    else:
+        try:
+            cols = st.columns(len(US_SYMBOLS))
+            for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
+                with col:
+                    data = get_asset_data_with_history(dm, symbol, desc, days=90)
+                    if data:
+                        render_asset_card(
+                            data["desc"],
+                            data["price"],
+                            data["change_pct"],
+                            symbol,
+                            sparkline_df=data["history"],
+                        )
+                    else:
+                        st.warning(f"{desc}: 暂无数据")
 
-    except Exception as e:
-        st.error(f"美股数据获取失败: {e}")
+        except Exception as e:
+            st.error(f"美股数据获取失败: {e}")
 
     st.divider()
 
