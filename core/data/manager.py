@@ -121,7 +121,8 @@ class DataManager:
         """预取回测所需的历史数据（按需补充）
 
         检查数据库中各 symbol 的最早日期，不足则从 API 补充。
-        仅补充 Twelve Data 源（美股/ETF），AkShare 源返回全部历史。
+        - 美股/ETF: Twelve Data（限速 8 次/分钟，按日期范围获取）
+        - A股/全球指数: AkShare（返回全部历史，无限速）
 
         Args:
             min_days: 回测需要的最少历史天数（含预热期）
@@ -130,39 +131,77 @@ class DataManager:
 
         cutoff = (datetime.now() - timedelta(days=min_days)).strftime("%Y-%m-%d")
 
-        # 检查 US 符号的数据覆盖情况
-        all_symbols = list(US_SYMBOLS.keys()) + list(US_SECTORS_SYMBOLS.keys())
+        # 检查所有符号的数据覆盖情况
+        us_symbols = list(US_SYMBOLS.keys()) + list(US_SECTORS_SYMBOLS.keys())
+        cn_symbols = list(CN_SYMBOLS.keys())
+        global_symbols = list(GLOBAL_SYMBOLS.keys())
+        all_symbols = us_symbols + cn_symbols + global_symbols
         earliest = self.storage.get_earliest_dates(all_symbols)
 
-        # 找出缺失或不足的 symbol
-        missing = []
-        for symbol in all_symbols:
+        # 找出缺失或不足的 symbol（按数据源分组）
+        missing_us = []
+        missing_cn = []
+        missing_global = []
+
+        for symbol in us_symbols:
             first = earliest.get(symbol)
             if first is None or first > cutoff:
-                missing.append(symbol)
+                missing_us.append(symbol)
 
-        if not missing:
+        for symbol in cn_symbols:
+            first = earliest.get(symbol)
+            if first is None or first > cutoff:
+                missing_cn.append(symbol)
+
+        for symbol in global_symbols:
+            first = earliest.get(symbol)
+            if first is None or first > cutoff:
+                missing_global.append(symbol)
+
+        if not missing_us and not missing_cn and not missing_global:
             logger.info("数据已满足回测要求，无需预取")
             return
 
-        logger.info(f"需预取 {len(missing)} 个 US symbol，目标 {min_days} 天")
-
-        # 用日期范围获取数据（比 outputsize 更可靠，能拿到更多历史）
-        start = cutoff  # 从截止日期开始获取
-        end = datetime.now().strftime("%Y-%m-%d")
-
-        for i, symbol in enumerate(missing):
-            if i > 0:
-                import time
-                time.sleep(1)  # 遵守速率限制
+        # 1. 预取 A 股指数（AkShare，返回全部历史，无限速）
+        if missing_cn:
+            logger.info(f"需预取 {len(missing_cn)} 个 A 股 symbol")
             try:
-                df = self.twelvedata.get_time_series(
-                    symbol, start_date=start, end_date=end
-                )
-                count = self.storage.save(df, symbol, "twelvedata")
-                logger.info(f"预取 {symbol} 完成，写入 {count} 条")
+                cn_results = self.fetch_cn_assets()
+                for sym, count in cn_results.items():
+                    if isinstance(count, int) and count > 0:
+                        logger.info(f"预取 A 股 {sym} 完成，写入 {count} 条")
             except Exception as e:
-                logger.error(f"预取 {symbol} 失败: {e}")
+                logger.error(f"预取 A 股失败: {e}")
+
+        # 2. 预取全球指数（AkShare，返回全部历史，无限速）
+        if missing_global:
+            logger.info(f"需预取 {len(missing_global)} 个全球 symbol")
+            try:
+                global_results = self.fetch_global_assets()
+                for sym, count in global_results.items():
+                    if isinstance(count, int) and count > 0:
+                        logger.info(f"预取全球 {sym} 完成，写入 {count} 条")
+            except Exception as e:
+                logger.error(f"预取全球指数失败: {e}")
+
+        # 3. 预取美股/ETF（Twelve Data，限速，按日期范围获取）
+        if missing_us:
+            logger.info(f"需预取 {len(missing_us)} 个 US symbol，目标 {min_days} 天")
+            start = cutoff
+            end = datetime.now().strftime("%Y-%m-%d")
+
+            for i, symbol in enumerate(missing_us):
+                if i > 0:
+                    import time
+                    time.sleep(1)  # 遵守速率限制
+                try:
+                    df = self.twelvedata.get_time_series(
+                        symbol, start_date=start, end_date=end
+                    )
+                    count = self.storage.save(df, symbol, "twelvedata")
+                    logger.info(f"预取 {symbol} 完成，写入 {count} 条")
+                except Exception as e:
+                    logger.error(f"预取 {symbol} 失败: {e}")
 
     def load(
         self,
