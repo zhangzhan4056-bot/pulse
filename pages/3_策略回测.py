@@ -254,6 +254,8 @@ def main():
     st.title("  策略回测")
     st.caption("策略发现与历史表现对比")
 
+    dm = get_data_manager()
+
     # 侧边栏：回测参数
     with st.sidebar:
         st.subheader("回测参数")
@@ -313,6 +315,15 @@ def main():
             st.divider()
 
         run_clicked = st.button("  运行回测", use_container_width=True, type="primary")
+
+        # 数据诊断
+        with st.expander("  数据诊断"):
+            stats = dm.get_stats()
+            if stats.empty:
+                st.warning("数据库为空，请先获取数据")
+            else:
+                for _, row in stats.iterrows():
+                    st.caption(f"{row['symbol']}: {row['first_date']} ~ {row['last_date']} ({row['rows']} 条)")
 
     # 主区域
     if not selected_strategies:
