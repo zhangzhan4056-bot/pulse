@@ -27,6 +27,56 @@ class BacktestResult:
     weight_history: pd.DataFrame  # 每次再平衡的权重记录
 
 
+def _calc_option_payoff(
+    monthly_drop: float, otm_threshold: float, cost: float, vol: float = 0.20
+) -> float:
+    """用简化 Black-Scholes 计算 5% OTM 月 put 的赔付。
+
+    Args:
+        monthly_drop: SPY 月末收盘价相对月初的跌幅（正值，如 0.08 = 8%）
+        otm_threshold: OTM 虚值比例（如 0.05 = 5%）
+        cost: 月权利金占组合比例（如 0.002 = 0.2%）
+        vol: 年化波动率（默认 20%，SPY 长期均值）
+
+    Returns:
+        对冲对组合的贡献。monthly_drop <= otm_threshold 时返回 0。
+    """
+    import math
+
+    if monthly_drop <= otm_threshold:
+        return 0.0
+
+    S0 = 100.0
+    K = S0 * (1 - otm_threshold)
+    S1 = S0 * (1 - monthly_drop)
+    T = 1.0 / 12.0
+    sqrt_T = math.sqrt(T)
+
+    d1 = (math.log(S1 / K) + 0.5 * vol ** 2 * T) / (vol * sqrt_T)
+    d2 = d1 - vol * sqrt_T
+
+    def _norm_cdf(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    # 行权日 put 内在价值（假设欧式，到期结算）
+    intrinsic = max(K - S1, 0.0)
+    # BS 公允价值（含时间价值，月末未到期时的理论价格）
+    bs_value = K * math.exp(-0.03 * T) * _norm_cdf(-d2) - S1 * _norm_cdf(-d1)
+    # 取两者较大值（实际中未到期期权价值 >= 内在价值）
+    put_value = max(bs_value, intrinsic)
+
+    # 权利金 = S0 × cost / cost_fraction（反推名义权利金）
+    # 假设 cost 对应 S0 的 cost 比例，即权利金 = cost × S0
+    premium = cost * S0
+
+    # 组合贡献 = (期权收益 / premium) × cost
+    if put_value <= premium:
+        # 期权亏损，最大亏损 = 权利金（即 -cost）
+        return -(premium - put_value) / S0
+    else:
+        return (put_value - premium) / S0
+
+
 class BacktestEngine:
     """回测引擎 - 月度再平衡，按日计算组合收益"""
 
@@ -54,7 +104,7 @@ class BacktestEngine:
         end_date: str,
         hedge_monthly_cost: Optional[float] = None,
         hedge_otm_threshold: float = 0.05,
-        hedge_leverage: float = 7.0,
+        hedge_leverage: float = 15.0,   # 向后兼容，非线性赔付函数不依赖此参数
     ) -> BacktestResult:
         """执行单个策略的回测
 
@@ -63,9 +113,9 @@ class BacktestEngine:
             all_data: {symbol: DataFrame} 完整历史数据
             start_date: 回测开始日期 "YYYY-MM-DD"
             end_date: 回测结束日期 "YYYY-MM-DD"
-            hedge_monthly_cost: 尾部对冲月成本比例（如 0.015 = 1.5%），None 表示无对冲
+            hedge_monthly_cost: 尾部对冲月成本比例（如 0.004 = 0.4%），None 表示无对冲
             hedge_otm_threshold: OTM put 虚值比例（如 0.05 = 5% OTM）
-            hedge_leverage: 期权杠杆系数（虚值 put 的收益放大倍数）
+            hedge_leverage: 向后兼容参数，非线性赔付函数不依赖此值
 
         Returns:
             BacktestResult 回测结果
@@ -122,7 +172,7 @@ class BacktestEngine:
                 portfolio_value *= (1 - period_hedge_cost)
                 hedge_costs.append({"date": rebal_date, "cost": period_hedge_cost})
 
-                # 计算上月 SPY 收益，判断是否有对冲赔付
+                # 用月末收盘价计算 SPY 月度收益，调用非线性赔付函数
                 if spy_period_start_price is not None:
                     spy_available = spy_series[spy_series.index <= rebal_date]
                     if len(spy_available) > 0:
@@ -131,8 +181,10 @@ class BacktestEngine:
 
                         # SPY 月跌幅超过 OTM 阈值 → 期权产生收益
                         if spy_monthly_return < -hedge_otm_threshold:
-                            excess_drop = abs(spy_monthly_return) - hedge_otm_threshold
-                            period_hedge_payoff = excess_drop * hedge_leverage
+                            max_dd = abs(spy_monthly_return)
+                            period_hedge_payoff = _calc_option_payoff(
+                                max_dd, hedge_otm_threshold, hedge_monthly_cost
+                            )
                             portfolio_value *= (1 + period_hedge_payoff)
                             hedge_payoffs.append({
                                 "date": rebal_date,
@@ -245,7 +297,7 @@ class BacktestEngine:
         for strategy in strategies:
             hedge_cost = getattr(strategy, "hedge_monthly_cost", None)
             hedge_otm = getattr(strategy, "hedge_otm_threshold", 0.05)
-            hedge_lev = getattr(strategy, "hedge_leverage", 7.0)
+            hedge_lev = getattr(strategy, "hedge_leverage", 15.0)
             result = self.run(
                 strategy, all_data, start_date, end_date,
                 hedge_monthly_cost=hedge_cost,

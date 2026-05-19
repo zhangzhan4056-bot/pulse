@@ -24,7 +24,7 @@ from core.strategy.strategies import (
     MomentumVolFilterStrategy,
     DrawdownControlStrategy,
     AntifragileStrategy,
-    GEMRegimeOverlayStrategy,
+    AntifragileAggressiveStrategy,
     TailRiskParityStrategy,
     DrawdownConstraintStrategy,
     STRATEGY_CATEGORIES,
@@ -48,10 +48,10 @@ STRATEGY_REGISTRY = {
     "均值回归策略": MeanReversionStrategy,
     "风险平价策略": RiskParityStrategy,
     "低相关性组合策略": MinCorrelationStrategy,
-    "GEM宏观配置": GEMRegimeOverlayStrategy,
     "尾部风险平价": TailRiskParityStrategy,
     "回撤约束优化": DrawdownConstraintStrategy,
     "反脆弱策略": AntifragileStrategy,
+    "反脆弱激进版": AntifragileAggressiveStrategy,
 }
 
 # 按分类分组的策略顺序
@@ -193,9 +193,10 @@ def render_strategy_card(result: BacktestResult):
     if strategy_cls and hasattr(strategy_cls, "hedge_monthly_cost"):
         cost_pct = strategy_cls.hedge_monthly_cost * 100
         otm_pct = strategy_cls.hedge_otm_threshold * 100
+        annual_cost = cost_pct * 12
         st.caption(
-            f"对冲参数: 权利金 {cost_pct:.1f}%/月 · OTM {otm_pct:.0f}% · 杠杆 {strategy_cls.hedge_leverage:.0f}x "
-            f"(固定模拟，非真实期权数据)"
+            f"对冲参数: 权利金 {cost_pct:.1f}%/月 ({annual_cost:.1f}%/年) · OTM {otm_pct:.0f}% "
+            f"· BS 模型赔付（月末结算）"
         )
 
     st.divider()
@@ -311,7 +312,12 @@ def main():
             st.caption(cat["description"])
             # 反脆弱策略数据来源提示
             if cat_key == "反脆弱":
-                st.warning("期权权利金采用固定 0.5%/月 模拟，实际费用受 IV/期限等影响。真实回测需接入付费期权数据源（ORATS/CBOE 等）。", icon="⚠️")
+                st.warning(
+                    "反脆弱策略：0.3%/月（年化 3.6%）+ 5% OTM。"
+                    "反脆弱激进版：0.5%/月（年化 6%）+ 3% OTM，更频繁触发。"
+                    "赔付均采用简化 Black-Scholes 公式（月末结算）。",
+                    icon="⚠️",
+                )
             st.divider()
 
         run_clicked = st.button("  运行回测", use_container_width=True, type="primary")
@@ -388,13 +394,13 @@ def main():
     st.subheader("  策略表现对比")
 
     # 反脆弱策略数据说明
-    has_antifragile = any(r.strategy_name == "反脆弱策略" for r in valid_results)
+    has_antifragile = any("反脆弱" in r.strategy_name for r in valid_results)
     if has_antifragile:
         st.info(
-            "  **反脆弱策略说明**: 期权权利金按固定 0.5%/月 模拟，"
-            "实际成本受隐含波动率(IV)、剩余期限、行权价等因素影响。"
-            "回测中 SPY 月跌 >5% 时产生对冲收益（杠杆系数 7x 估算）。"
-            "如需精确回测，需接入付费期权数据源（ORATS $99/月、CBOE DataShop 等）。",
+            "  **反脆弱策略说明**: 模拟 SPY 月 put 期权，赔付采用简化 Black-Scholes 公式——"
+            "SPY 月末收盘跌幅超 OTM 阈值时产生凸性收益，跌幅越大收益加速增长。"
+            "标准版 5% OTM / 0.3%/月，激进版 3% OTM / 0.5%/月。"
+            "如需精确回测，需接入付费期权数据源（ORATS、CBOE DataShop 等）。",
             icon="ℹ️",
         )
 

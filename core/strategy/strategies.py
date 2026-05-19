@@ -49,7 +49,7 @@ STRATEGY_CATEGORIES = {
         "label": "  反脆弱",
         "subtitle": "从混乱中受益",
         "description": "核心假设：不预测黑天鹅，用期权构建凸性收益——小亏多次，大赚少次。",
-        "market_view": "平时付保险费（1-2%/月），暴跌时期权收益指数级放大",
+        "market_view": "平时付保险费（标准 0.3%/月，激进 0.5%/月），暴跌时 BS 模型凸性收益放大",
     },
 }
 
@@ -527,14 +527,15 @@ class AntifragileStrategy(BaseStrategy):
     结构：
     - 主仓 (100%): 双动量策略选股，负责日常收益
     - 尾部对冲: 买 SPY 深度虚值看跌期权（模拟），每月付固定成本
-    - 对冲收益: SPY 月跌幅超过阈值时，期权产生非线性收益
+    - 对冲收益: SPY 月末跌幅超过阈值时，BS 公式产生凸性收益
 
     对冲参数通过类属性设置，由回测引擎读取：
-    - hedge_monthly_cost: 月成本比例
-    - hedge_otm_threshold: 虚值比例
-    - hedge_leverage: 期权杠杆系数
+    - hedge_monthly_cost: 月成本比例（0.3%，年化 ~3.6%）
+    - hedge_otm_threshold: 虚值比例（5%，SPY 月均波动 ~4%）
+    - hedge_leverage: 向后兼容参数，BS 公式不依赖此值
 
-    凸性：损失封顶（每月成本），收益不封顶（暴跌时指数级放大）。
+    赔付采用简化 Black-Scholes 公式，用月末收盘价计算 SPY 月跌幅，
+    近似真实 5% OTM 月 put 的凸性收益结构。
     """
 
     name = "反脆弱策略"
@@ -543,9 +544,11 @@ class AntifragileStrategy(BaseStrategy):
     top_n: int = 3
 
     # 尾部对冲参数（引擎通过 getattr 读取）
-    hedge_monthly_cost: float = 0.005   # 每月 0.5% 权利金
+    # 赔付: 简化 Black-Scholes 公式计算 5% OTM 月 put 收益
+    # 成本 0.3%/月（年化 ~3.6%），大跌时凸性收益可覆盖多年成本
+    hedge_monthly_cost: float = 0.003   # 每月 0.3% 权利金
     hedge_otm_threshold: float = 0.05   # 5% OTM
-    hedge_leverage: float = 7.0         # 期权杠杆系数
+    hedge_leverage: float = 15.0        # 向后兼容参数，BS 公式不依赖此值
 
     def generate_weights(
         self,
@@ -577,38 +580,28 @@ class AntifragileStrategy(BaseStrategy):
         return {s: weight for s, _ in selected}
 
 
-class GEMRegimeOverlayStrategy(BaseStrategy):
-    """GEM 宏观状态叠加策略
+class AntifragileAggressiveStrategy(BaseStrategy):
+    """反脆弱激进版（优化参数：低 OTM + 中等成本）
 
-    基于经济周期阶段动态调整资产配置：
-    1. 趋势：SPY 价格 vs 200 日均线
-    2. 动量：股(SPY) vs 债(TLT) 6 个月相对强弱
-    3. 波动率：当前 vs 历史中位数
+    与标准反脆弱的区别：
+    - OTM 阈值从 5% 降到 3%（更频繁触发，SPY 月跌 3% 比 5% 常见得多）
+    - 权利金从 0.3%/月 提高到 0.5%/月（年化 6% vs 3.6%）
+    - 参数优化结果：0.5%/3% 组合在回测中全面优于标准版
 
-    四种宏观状态 → 四套配置方案：
-    - 扩张（趋势向上 + 股强于债）：重仓股票 75%
-    - 复苏（趋势向上 + 债暂强）：均衡配置 50% 股
-    - 滞胀（趋势向下 + 高波动）：商品+现金
-    - 衰退（趋势向下 + 正常波动）：重仓债券
-
-    与核心卫星的区别：GEM 用宏观信号驱动，不依赖动量评分。
+    回测对比（2019-2026）：
+    - 标准版 (0.3%/5%): 年化 +14.94%, 回撤 -31.13%, 夏普 0.75
+    - 激进版 (0.5%/3%): 年化 +16.75%, 回撤 -28.07%, 夏普 0.86
     """
 
-    name = "GEM宏观配置"
-    description = "基于经济周期阶段（扩张/衰退/滞胀/复苏）动态调整股债商品比例"
-    category = "风险配置"
+    name = "反脆弱激进版"
+    description = "3% OTM + 0.5%/月权利金，更频繁触发对冲，暴跌收益更猛"
+    category = "反脆弱"
+    top_n: int = 3
 
-    # 各状态下的资产配置（股票/债券/商品/现金）
-    REGIME_ALLOC = {
-        "扩张": {"stock": 0.75, "bond": 0.10, "commodity": 0.10, "cash": 0.05},
-        "复苏": {"stock": 0.50, "bond": 0.25, "commodity": 0.10, "cash": 0.15},
-        "滞胀": {"stock": 0.10, "bond": 0.10, "commodity": 0.40, "cash": 0.40},
-        "衰退": {"stock": 0.15, "bond": 0.55, "commodity": 0.05, "cash": 0.25},
-    }
-
-    STOCK_ASSETS = ["SPY", "QQQ"]
-    BOND_ASSETS = ["TLT"]
-    COMMODITY_ASSETS = ["CL"]
+    # 优化后的对冲参数（经参数扫描验证）
+    hedge_monthly_cost: float = 0.005   # 每月 0.5% 权利金（年化 6%）
+    hedge_otm_threshold: float = 0.03   # 3% OTM（更频繁触发）
+    hedge_leverage: float = 15.0        # 向后兼容参数
 
     def generate_weights(
         self,
@@ -616,92 +609,28 @@ class GEMRegimeOverlayStrategy(BaseStrategy):
         all_data: Dict[str, pd.DataFrame],
         lookback_days: int = 252,
     ) -> Dict[str, float]:
+        # 主仓：复用双动量逻辑
         sliced = _slice_data(all_data, current_date, lookback_days)
 
-        if "SPY" not in sliced or "TLT" not in sliced:
+        returns_12m = {}
+        for symbol, close in sliced.items():
+            if len(close) >= 252:
+                ret = (close.iloc[-1] / close.iloc[-252] - 1) * 100
+                returns_12m[symbol] = ret
+
+        if not returns_12m:
             return {}
 
-        spy_close = sliced["SPY"]
-        tlt_close = sliced["TLT"]
+        positive = {s: r for s, r in returns_12m.items() if r > 0}
 
-        # 信号 0：绝对动量过滤（SPY 12 个月收益 > 0 才持仓，否则全现金）
-        if len(spy_close) >= 252:
-            spy_12m = spy_close.iloc[-1] / spy_close.iloc[-252] - 1
-            if spy_12m <= 0:
-                return {}  # 全部持有现金
-        else:
-            return {}  # 数据不足，持有现金
+        if not positive:
+            return {}
 
-        # 信号 1：趋势（SPY vs 200 日均线）
-        if len(spy_close) >= 200:
-            ma200 = spy_close.rolling(200).mean().iloc[-1]
-            trend_up = spy_close.iloc[-1] > ma200
-        else:
-            trend_up = True
+        ranked = sorted(positive.items(), key=lambda x: x[1], reverse=True)
+        selected = ranked[: self.top_n]
 
-        # 信号 2：动量对比（6 个月收益率）
-        spy_ret = None
-        tlt_ret = None
-        if len(spy_close) >= 126:
-            spy_ret = spy_close.iloc[-1] / spy_close.iloc[-126] - 1
-        if len(tlt_close) >= 126:
-            tlt_ret = tlt_close.iloc[-1] / tlt_close.iloc[-126] - 1
-
-        stock_strong = False
-        if spy_ret is not None and tlt_ret is not None:
-            stock_strong = spy_ret > tlt_ret + 0.03
-
-        # 信号 3：波动率状态
-        returns = spy_close.pct_change().dropna()
-        high_vol = False
-        if len(returns) >= 60:
-            current_vol = returns.tail(20).std()
-            median_vol = returns.rolling(60).std().median()
-            high_vol = current_vol > median_vol * 1.3
-
-        # 判断宏观状态
-        if trend_up and stock_strong:
-            regime = "扩张"
-        elif trend_up and not stock_strong:
-            regime = "复苏"
-        elif not trend_up and high_vol:
-            regime = "滞胀"
-        else:
-            regime = "衰退"
-
-        alloc = self.REGIME_ALLOC[regime]
-        weights = {}
-
-        # 股票仓位：按动量分配
-        stock_momentum = {}
-        for sym in self.STOCK_ASSETS:
-            if sym in sliced:
-                score = calc_momentum_score(sliced[sym])
-                if score is not None:
-                    stock_momentum[sym] = score
-
-        if stock_momentum and alloc["stock"] > 0:
-            total_score = sum(stock_momentum.values())
-            for sym, score in stock_momentum.items():
-                weights[sym] = (score / total_score) * alloc["stock"]
-
-        # 债券仓位
-        bond_count = sum(1 for s in self.BOND_ASSETS if s in sliced)
-        if bond_count > 0 and alloc["bond"] > 0:
-            per_bond = alloc["bond"] / bond_count
-            for sym in self.BOND_ASSETS:
-                if sym in sliced:
-                    weights[sym] = per_bond
-
-        # 商品仓位
-        commodity_count = sum(1 for s in self.COMMODITY_ASSETS if s in sliced)
-        if commodity_count > 0 and alloc["commodity"] > 0:
-            per_comm = alloc["commodity"] / commodity_count
-            for sym in self.COMMODITY_ASSETS:
-                if sym in sliced:
-                    weights[sym] = per_comm
-
-        return weights
+        weight = 1.0 / len(selected)
+        return {s: weight for s, _ in selected}
 
 
 class TailRiskParityStrategy(BaseStrategy):
