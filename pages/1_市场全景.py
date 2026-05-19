@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import numpy as np
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,11 +16,20 @@ import plotly.graph_objects as go
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
+from core.data.config import MACRO_INDICATORS
+from core.data.macro_fetcher import MacroFetcher
+from core.data.macro_storage import MacroStorage
+from core.data.macro_analyzer import compute_macro_analysis
 from core.strategy.indicators import calc_momentum_score, calc_returns
 from app.components.charts import (
     create_candlestick_chart,
     create_line_chart,
     create_multi_line_chart,
+)
+from app.components.macro_charts import (
+    create_macro_indicator_scatter,
+    create_macro_timeline,
+    render_macro_value_cards,
 )
 
 # 页面配置
@@ -33,6 +43,24 @@ st.set_page_config(
 @st.cache_resource
 def get_data_manager():
     return DataManager()
+
+
+@st.cache_resource
+def get_macro_storage():
+    return MacroStorage()
+
+
+@st.cache_resource
+def get_macro_fetcher():
+    return MacroFetcher()
+
+
+@st.cache_data(ttl=3600, show_spinner="计算宏观相似度...")
+def run_macro_analysis(_macro_hash: str):
+    """宏观相似度分析（缓存 1 小时）"""
+    macro_storage = get_macro_storage()
+    macro_data = macro_storage.load_all()
+    return compute_macro_analysis(macro_data)
 
 
 def format_price(price: float, symbol: str) -> str:
@@ -199,17 +227,20 @@ def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: i
 
 
 def refresh_all_data(dm: DataManager, progress_bar) -> dict:
-    """从 API 获取所有资产数据"""
+    """从 API 获取所有资产数据 + 宏观数据"""
     import time
 
-    results = {"us": {}, "cn": {}, "global": {}, "sectors": {}}
+    results = {"us": {}, "cn": {}, "global": {}, "sectors": {}, "macro": {}}
 
     # 1. 美股大类资产（Twelve Data，限速 8 次/分钟）
     us_symbols = list(US_SYMBOLS.keys())
+    total_steps = len(us_symbols) + len(US_SECTORS_SYMBOLS) + 3  # +3: A股/亚太/宏观
+    step = 0
+
     for i, symbol in enumerate(us_symbols):
         try:
             progress_bar.progress(
-                i / 30, text=f"美股 {symbol} ({i+1}/{len(us_symbols)})..."
+                step / total_steps, text=f"美股 {symbol} ({i+1}/{len(us_symbols)})..."
             )
             df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
             count = dm.storage.save(df, symbol, "twelvedata")
@@ -218,13 +249,14 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
                 time.sleep(8)
         except Exception as e:
             results["us"][symbol] = f"错误: {e}"
+        step += 1
 
     # 2. 美股板块 ETF（Twelve Data）
     sector_symbols = list(US_SECTORS_SYMBOLS.keys())
     for i, symbol in enumerate(sector_symbols):
         try:
             progress_bar.progress(
-                (len(us_symbols) + i) / 30,
+                step / total_steps,
                 text=f"板块 {symbol} ({i+1}/{len(sector_symbols)})...",
             )
             df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
@@ -234,9 +266,11 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
                 time.sleep(8)
         except Exception as e:
             results["sectors"][symbol] = f"错误: {e}"
+        step += 1
 
     # 3. A股指数（AkShare，无严格限速）
-    progress_bar.progress(0.7, text="获取 A 股指数...")
+    step += 1
+    progress_bar.progress(step / total_steps, text="获取 A 股指数...")
     try:
         cn_results = dm.fetch_cn_assets()
         results["cn"] = cn_results
@@ -244,12 +278,26 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
         results["cn"] = {"error": str(e)}
 
     # 4. 全球指数（AkShare）
-    progress_bar.progress(0.85, text="获取亚太指数...")
+    step += 1
+    progress_bar.progress(step / total_steps, text="获取亚太指数...")
     try:
         global_results = dm.fetch_global_assets()
         results["global"] = global_results
     except Exception as e:
         results["global"] = {"error": str(e)}
+
+    # 5. 宏观数据（AkShare，无严格限速）
+    step += 1
+    progress_bar.progress(step / total_steps, text="获取宏观数据...")
+    try:
+        macro_fetcher = get_macro_fetcher()
+        macro_data = macro_fetcher.fetch_all()
+        macro_storage = get_macro_storage()
+        macro_results = macro_storage.save_all(macro_data)
+        results["macro"] = macro_results
+        run_macro_analysis.clear()
+    except Exception as e:
+        results["macro"] = {"error": str(e)}
 
     progress_bar.progress(1.0, text="完成")
     return results
@@ -260,6 +308,7 @@ def main():
     st.caption("大类资产实时行情与走势")
 
     dm = get_data_manager()
+    macro_storage = get_macro_storage()
 
     # 检查数据库是否有数据
     stats = dm.get_stats()
@@ -283,9 +332,14 @@ def main():
 
         # 显示数据最后更新时间
         last_updated = get_data_last_updated(dm)
-        st.caption(f"数据更新至: {last_updated}")
+        st.caption(f"指数数据更新至: {last_updated}")
 
-        # 一键获取按钮
+        macro_stats_df = macro_storage.get_stats()
+        if not macro_stats_df.empty:
+            last_macro_date = macro_stats_df["last_date"].max()
+            st.caption(f"宏观数据更新至: {last_macro_date}")
+
+        # 一键获取按钮（指数 + 宏观）
         if st.button("  一键获取所有数据", use_container_width=True, type="primary"):
             st.warning("首次获取需要约 3 分钟（美股限速），请耐心等待...")
             progress_bar = st.progress(0, text="开始获取...")
@@ -297,17 +351,166 @@ def main():
             sectors_ok = sum(1 for v in results["sectors"].values() if isinstance(v, int) and v > 0)
             cn_ok = sum(1 for v in results.get("cn", {}).values() if isinstance(v, int) and v > 0)
             global_ok = sum(1 for v in results.get("global", {}).values() if isinstance(v, int) and v > 0)
+            macro_ok = sum(1 for v in results.get("macro", {}).values() if isinstance(v, int) and v > 0)
 
             st.success(
                 f"美股 {us_ok}/{len(US_SYMBOLS)} | "
                 f"板块 {sectors_ok}/{len(US_SECTORS_SYMBOLS)} | "
                 f"A股 {cn_ok}/{len(CN_SYMBOLS)} | "
-                f"亚太 {global_ok}/{len(GLOBAL_SYMBOLS)}"
+                f"亚太 {global_ok}/{len(GLOBAL_SYMBOLS)} | "
+                f"宏观 {macro_ok}/5"
             )
             st.rerun()
 
         st.divider()
         st.caption(f"页面加载时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # ============================================================
+    # 宏观观测（顶部）
+    # ============================================================
+    st.subheader("  宏观观测")
+    st.caption("通过对比当前宏观环境与历史相似时期，预判后续市场走势")
+
+    if not macro_storage.has_data():
+        st.info("暂无宏观数据，请点击侧边栏「一键获取所有数据」")
+    else:
+        try:
+            macro_stats = macro_storage.get_stats()
+            macro_hash = str(macro_stats["last_date"].max())
+
+            analysis = run_macro_analysis(macro_hash)
+
+            if "error" in analysis:
+                st.warning(analysis["error"])
+            else:
+                # 1. 当前宏观指标值卡片
+                render_macro_value_cards(analysis)
+
+                # 2. 散点图 + 相似月份表格（左右布局）
+                col_chart, col_table = st.columns([3, 2])
+
+                with col_chart:
+                    indicator_options = list(MACRO_INDICATORS.keys())
+                    col_x, col_y = st.columns(2)
+                    with col_x:
+                        x_ind = st.selectbox(
+                            "X 轴",
+                            options=indicator_options,
+                            format_func=lambda x: MACRO_INDICATORS[x]["name"],
+                            index=indicator_options.index("cpi_yoy"),
+                            key="macro_scatter_x",
+                        )
+                    with col_y:
+                        y_ind = st.selectbox(
+                            "Y 轴",
+                            options=indicator_options,
+                            format_func=lambda x: MACRO_INDICATORS[x]["name"],
+                            index=indicator_options.index("treasury_10y"),
+                            key="macro_scatter_y",
+                        )
+
+                    fig = create_macro_indicator_scatter(
+                        analysis["matrix"],
+                        analysis["current_month"],
+                        analysis["similar"],
+                        x_indicator=x_ind,
+                        y_indicator=y_ind,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col_table:
+                    st.markdown("**历史相似时期**")
+                    similar = analysis["similar"]
+                    forward = analysis["forward_returns"]
+
+                    if not similar.empty and not forward.empty:
+                        merged = similar.merge(forward, on="month", how="left")
+                        display_df = merged[["rank", "month", "distance"]].copy()
+                        display_df["月份"] = display_df["month"].dt.strftime("%Y-%m")
+                        display_df["相似度"] = display_df["distance"].apply(lambda x: f"{x:.2f}")
+
+                        for col in ["spy_6m", "spy_12m"]:
+                            if col in merged.columns:
+                                display_df[col] = merged[col].apply(
+                                    lambda x: f"+{x:.1f}%" if x and x > 0 else f"{x:.1f}%" if x else "N/A"
+                                )
+
+                        display_df = display_df.rename(columns={
+                            "rank": "#",
+                            "spy_6m": "SPY 6M",
+                            "spy_12m": "SPY 12M",
+                        })
+                        display_df = display_df[["#", "月份", "相似度", "SPY 6M", "SPY 12M"]]
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+                        # 结论摘要
+                        avg_spy_6m = forward["spy_6m"].dropna().mean()
+                        avg_spy_12m = forward["spy_12m"].dropna().mean()
+                        if not np.isnan(avg_spy_6m):
+                            if avg_spy_6m > 5:
+                                outlook = "偏乐观"
+                            elif avg_spy_6m > 0:
+                                outlook = "中性偏多"
+                            elif avg_spy_6m > -5:
+                                outlook = "中性偏空"
+                            else:
+                                outlook = "偏悲观"
+                            st.info(
+                                f"**宏观展望: {outlook}** — "
+                                f"SPY 6M 均值 {avg_spy_6m:+.1f}%，12M 均值 {avg_spy_12m:+.1f}%"
+                            )
+
+                # 3. 百分位走势图
+                ranked = analysis["ranked"]
+                time_min = ranked.index.min().date()
+                time_max = ranked.index.max().date()
+
+                # 预设时间区间快捷按钮
+                now = pd.Timestamp.now()
+                range_options = {
+                    "全部": (time_min, time_max),
+                    "近 10 年": ((now - pd.DateOffset(years=10)).date(), time_max),
+                    "近 20 年": ((now - pd.DateOffset(years=20)).date(), time_max),
+                    "2000 至今": (pd.Timestamp("2000-01-01").date(), time_max),
+                    "1990-2010": (pd.Timestamp("1990-01-01").date(), pd.Timestamp("2010-12-31").date()),
+                }
+                range_col1, range_col2 = st.columns([1, 3])
+                with range_col1:
+                    range_key = st.selectbox(
+                        "时间区间",
+                        options=list(range_options.keys()),
+                        index=0,
+                        key="macro_time_range",
+                    )
+                date_start, date_end = range_options[range_key]
+
+                # 过滤数据到选定区间
+                ranked_filtered = ranked.loc[str(date_start):str(date_end)]
+                spy_m = analysis.get("spy_monthly")
+                qqq_m = analysis.get("qqq_monthly")
+                spy_filtered = spy_m.loc[str(date_start):str(date_end)] if spy_m is not None and not spy_m.empty else None
+                qqq_filtered = qqq_m.loc[str(date_start):str(date_end)] if qqq_m is not None and not qqq_m.empty else None
+
+                # 过滤相似月份
+                similar = analysis["similar"]
+                similar_filtered = similar[
+                    (similar["month"].dt.date >= date_start) &
+                    (similar["month"].dt.date <= date_end)
+                ] if not similar.empty else similar
+
+                fig_timeline = create_macro_timeline(
+                    ranked_filtered,
+                    analysis["current_month"],
+                    similar_filtered,
+                    spy_monthly=spy_filtered,
+                    qqq_monthly=qqq_filtered,
+                )
+                st.plotly_chart(fig_timeline, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"宏观分析失败: {e}")
+
+    st.divider()
 
     # ============================================================
     # 美股大类资产
@@ -344,9 +547,7 @@ def main():
     st.subheader("  A股主要指数")
 
     try:
-        # 从数据库获取 A 股数据（含3个月走势）
         cols = st.columns(len(CN_SYMBOLS))
-
         for col, (symbol, name) in zip(cols, CN_SYMBOLS.items()):
             with col:
                 data = get_asset_data_with_history(dm, symbol, name, days=90)
@@ -373,7 +574,6 @@ def main():
 
     try:
         cols = st.columns(len(GLOBAL_SYMBOLS))
-
         for col, (symbol, name) in zip(cols, GLOBAL_SYMBOLS.items()):
             with col:
                 data = get_asset_data_with_history(dm, symbol, name, days=90)
@@ -399,7 +599,6 @@ def main():
     st.subheader("  美股板块热度")
 
     try:
-        # 加载板块数据（需要 180 天以确保 3M 收益率可计算）
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 
@@ -419,14 +618,12 @@ def main():
                 })
 
         if sector_data:
-            # 按动量评分排序
             sector_df = pd.DataFrame(sector_data)
             sector_df = sector_df.sort_values("动量评分", ascending=False, na_position="last")
             sector_df = sector_df.reset_index(drop=True)
             sector_df.index = sector_df.index + 1
             sector_df.index.name = "排名"
 
-            # 格式化
             display_sector = sector_df.copy()
             for col in ["1月%", "3月%"]:
                 display_sector[col] = display_sector[col].apply(
@@ -438,7 +635,6 @@ def main():
 
             st.dataframe(display_sector, use_container_width=True)
 
-            # 热门板块提示
             top_sectors = sector_df.head(3)
             hot_names = "、".join(top_sectors["板块"].tolist())
             st.info(f"近 3 个月热门板块：{hot_names}")
@@ -455,7 +651,6 @@ def main():
     # ============================================================
     st.subheader("  走势图表")
 
-    # 资产选择（使用 symbol 作为 key）
     symbol_options = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) + list(GLOBAL_SYMBOLS.keys())
     symbol_labels = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
 
@@ -466,20 +661,17 @@ def main():
         format_func=lambda x: f"{symbol_labels.get(x, x)} ({x})",
     )
 
-    # 时间范围（下拉框）
     time_range = st.selectbox(
         "时间范围",
         options=["1周", "1月", "3月", "6月", "1年"],
-        index=2,  # 默认 3月
+        index=2,
     )
 
-    # 计算日期范围
     days_map = {"1周": 7, "1月": 30, "3月": 90, "6月": 180, "1年": 365}
     days = days_map[time_range]
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # 获取历史数据
     chart_data = {}
     for symbol in selected_symbols:
         df = dm.load(symbol, start_date, end_date)
@@ -487,11 +679,9 @@ def main():
             chart_data[symbol] = df
 
     if chart_data:
-        # 多资产对比图
         fig = create_multi_line_chart(chart_data, title="资产走势对比")
         st.plotly_chart(fig, use_container_width=True)
 
-        # 单资产详情
         if len(chart_data) == 1:
             symbol = list(chart_data.keys())[0]
             df = chart_data[symbol]
