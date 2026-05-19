@@ -15,7 +15,8 @@ market-pulse/
 ├── 反脆弱策略学习指南.md     # 反脆弱策略深度学习指南
 ├── app/                    # 前端组件
 │   └── components/
-│       └── charts.py       # Plotly 图表组件
+│       ├── charts.py       # Plotly 图表组件
+│       └── macro_charts.py # 宏观观测图表（散点图+时间线）
 ├── pages/                  # Streamlit 页面（必须在根目录）
 │   ├── 1_市场全景.py        # P1: 市场全景（盯盘）
 │   ├── 2_机会扫描.py        # P2: 全市场机会扫描（分析）
@@ -28,7 +29,10 @@ market-pulse/
 │   │   ├── twelvedata.py   # Twelve Data API 封装
 │   │   ├── akshare.py      # AkShare 封装（新浪源）
 │   │   ├── storage.py      # SQLite 存储层
-│   │   └── manager.py      # DataManager 统一接口
+│   │   ├── manager.py      # DataManager 统一接口
+│   │   ├── macro_fetcher.py  # 宏观数据获取器（AkShare）
+│   │   ├── macro_storage.py  # 宏观数据存储（macro_daily 表）
+│   │   └── macro_analyzer.py # 宏观相似度分析（Z-score+欧氏距离+PCA）
 │   ├── strategy/           # 策略引擎
 │   │   ├── indicators.py   # 技术指标计算
 │   │   └── strategies.py   # 策略类定义（11种配置策略）
@@ -55,6 +59,12 @@ market-pulse/
   - 399006 (创业板指), 000688 (科创50), 000300 (沪深300)
 - **全球指数**: AkShare 新浪源
   - 日经225, KOSPI (韩国KOSPI)
+- **美国宏观数据**: AkShare（免费，无限速）
+  - CPI 同比 (`macro_usa_cpi_yoy`): 月度，2008 起
+  - PPI (`macro_usa_ppi`): 月度，2008 起
+  - 10Y 国债收益率 (`bond_zh_us_rate`): 日度聚合到月度，1990 起
+  - 联邦基金利率 (`macro_bank_usa_interest_rate`): 不定期(FOMC)，1982 起
+  - 失业率 (`macro_usa_unemployment_rate`): 月度，1970 起
 
 ## 开发状态
 
@@ -68,6 +78,7 @@ market-pulse/
 - [x] 策略类 (core/strategy/strategies.py) — 11种策略：趋势跟踪/双动量/动量+波动率过滤/回撤控制/均值回归/风险平价/低相关性组合/尾部风险平价/回撤约束优化/反脆弱/反脆弱激进版
 - [x] P3 策略回测页面 (pages/3_策略回测.py) — 策略对比与历史回测
 - [x] P4 复盘回顾页面 (pages/4_复盘回顾.py) — 双轨复盘：市场策略推荐+机会扫描分类准确性评估+策略推荐跑赢率评估，含评分区间命中率分析和参数优化建议
+- [x] P1 宏观观测模块 — CPI/PPI/10Y国债/联邦基金利率/失业率，Z-score+欧氏距离相似度匹配，散点图+时间线可视化
 
 ### 待开发（按优先级排序）
 1. [ ] P4 增强 — 风险调整指标（盈亏比/regret_rate）、基准对比（vs SPY）、按体制分组分析
@@ -119,3 +130,7 @@ streamlit run app.py
 - **Streamlit Cloud 数据库是临时的**：每次重启丢失，P1 的「一键获取」和 P3 的 `prefetch_for_backtest()` 都必须覆盖所有数据源（美股+A股+全球），不能只处理一种
 - **改完代码必须本地三个页面都跑一遍再 push**：不能只跑 P1 就认为没问题，P3 的 `st.columns(3)` 硬编码 bug 本地跑 P3 就能发现
 - **反脆弱对冲公式已改为简化 Black-Scholes**：用月末收盘价计算 SPY 月跌幅，BS 公式计算 OTM 月 put 赔付。标准版 cost=0.3%/月 + 5% OTM，激进版 cost=0.5%/月 + 3% OTM（经参数扫描优化）。vol=20%。不要用旧的线性公式 `excess_drop × leverage × cost`
+- **Twelve Data 免费计划不支持宏观端点**：`/cpi`、`/ppi`、`/treasury_yield`、`/fedfunds`、`/unemployment` 返回 404，必须用 AkShare 的 `macro_usa_*` 和 `bond_zh_us_rate` 函数
+- **QQQ AkShare 数据有 2005-2011 缺口**：`stock_us_daily(symbol='QQQ')` 缺少 2005~2011 数据（QQQ 曾改名 QQQQ），前向收益率计算对 2008 年相似月份返回 NaN
+- **AkShare 宏观函数偶尔 SSL 报错**：`datacenter-api.jin10.com` 偶发 SSLError，fetch_all 已有 try/except 容错，单个指标失败不影响其他
+- **反脆弱策略已全面切换到 BS 公允价值定价**：所有策略用 `use_bs_cost=True`，引擎用 `_bs_put_premium()` 动态计算 OTM put 权利金。赔付函数 `_calc_option_payoff()` 只用到期日内在价值（无时间价值虚增）。买保险有成本，对冲策略收益低于纯双动量是正常的

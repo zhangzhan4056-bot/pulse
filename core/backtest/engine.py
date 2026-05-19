@@ -28,53 +28,54 @@ class BacktestResult:
 
 
 def _calc_option_payoff(
-    monthly_drop: float, otm_threshold: float, cost: float, vol: float = 0.20
+    drop: float, otm_threshold: float, cost: float, vol: float = 0.20,
+    period_months: float = 1.0,
 ) -> float:
-    """用简化 Black-Scholes 计算 5% OTM 月 put 的赔付。
+    """计算 OTM put 到期日赔付（仅内在价值，无时间价值）。
 
     Args:
-        monthly_drop: SPY 月末收盘价相对月初的跌幅（正值，如 0.08 = 8%）
+        drop: SPY 周期跌幅（正值，如 0.08 = 8%）
         otm_threshold: OTM 虚值比例（如 0.05 = 5%）
-        cost: 月权利金占组合比例（如 0.002 = 0.2%）
-        vol: 年化波动率（默认 20%，SPY 长期均值）
+        cost: 周期权利金占组合比例（BS 公允价值或固定比例），已由调用方扣除
+        vol: 未使用，保留接口兼容
+        period_months: 未使用，保留接口兼容
 
     Returns:
-        对冲对组合的贡献。monthly_drop <= otm_threshold 时返回 0。
+        对冲对组合的贡献（仅赔付部分，成本已由调用方扣除）。drop <= otm_threshold 时返回 0。
     """
-    import math
-
-    if monthly_drop <= otm_threshold:
-        return 0.0
+    if drop <= otm_threshold:
+        return 0.0  # 未触发，无赔付（成本已由调用方扣除）
 
     S0 = 100.0
     K = S0 * (1 - otm_threshold)
-    S1 = S0 * (1 - monthly_drop)
-    T = 1.0 / 12.0
-    sqrt_T = math.sqrt(T)
+    S1 = S0 * (1 - drop)
 
-    d1 = (math.log(S1 / K) + 0.5 * vol ** 2 * T) / (vol * sqrt_T)
+    # 到期日 put 内在价值（欧式期权到期结算，无时间价值）
+    put_value = max(K - S1, 0.0)
+
+    premium = cost * S0
+    return (put_value - premium) / S0
+
+
+def _bs_put_premium(
+    spot: float, strike: float, vol: float, period_months: float, r: float = 0.03,
+) -> float:
+    """计算 BS put 权利金（占 spot 比例）。
+
+    用于动态计算每周期对冲成本，替代固定比例成本。
+    """
+    import math
+
+    T = period_months / 12.0
+    sqrt_T = math.sqrt(T)
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol ** 2) * T) / (vol * sqrt_T)
     d2 = d1 - vol * sqrt_T
 
     def _norm_cdf(x):
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-    # 行权日 put 内在价值（假设欧式，到期结算）
-    intrinsic = max(K - S1, 0.0)
-    # BS 公允价值（含时间价值，月末未到期时的理论价格）
-    bs_value = K * math.exp(-0.03 * T) * _norm_cdf(-d2) - S1 * _norm_cdf(-d1)
-    # 取两者较大值（实际中未到期期权价值 >= 内在价值）
-    put_value = max(bs_value, intrinsic)
-
-    # 权利金 = S0 × cost / cost_fraction（反推名义权利金）
-    # 假设 cost 对应 S0 的 cost 比例，即权利金 = cost × S0
-    premium = cost * S0
-
-    # 组合贡献 = (期权收益 / premium) × cost
-    if put_value <= premium:
-        # 期权亏损，最大亏损 = 权利金（即 -cost）
-        return -(premium - put_value) / S0
-    else:
-        return (put_value - premium) / S0
+    put_value = strike * math.exp(-r * T) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+    return put_value / spot
 
 
 class BacktestEngine:
@@ -96,6 +97,9 @@ class BacktestEngine:
         self.commission_rate = commission_rate
         self.warmup_days = warmup_days
 
+    # 再平衡频率 → 周期长度（月）
+    _FREQ_TO_MONTHS = {"M": 1.0, "W": 1.0 / 4.33, "D": 1.0 / 21.0}
+
     def run(
         self,
         strategy,
@@ -104,7 +108,10 @@ class BacktestEngine:
         end_date: str,
         hedge_monthly_cost: Optional[float] = None,
         hedge_otm_threshold: float = 0.05,
-        hedge_leverage: float = 15.0,   # 向后兼容，非线性赔付函数不依赖此参数
+        hedge_leverage: float = 15.0,
+        hedge_vol: float = 0.20,
+        use_bs_cost: bool = False,
+        rebalance_freq: str = "M",
     ) -> BacktestResult:
         """执行单个策略的回测
 
@@ -116,6 +123,9 @@ class BacktestEngine:
             hedge_monthly_cost: 尾部对冲月成本比例（如 0.004 = 0.4%），None 表示无对冲
             hedge_otm_threshold: OTM put 虚值比例（如 0.05 = 5% OTM）
             hedge_leverage: 向后兼容参数，非线性赔付函数不依赖此值
+            hedge_vol: BS 公式年化波动率（默认 20%，日频建议 30%）
+            use_bs_cost: True=用 BS 公式动态计算权利金成本（更真实），False=用固定 hedge_monthly_cost
+            rebalance_freq: 再平衡频率 "M"(月) / "W"(周) / "D"(日)
 
         Returns:
             BacktestResult 回测结果
@@ -135,8 +145,11 @@ class BacktestEngine:
             trading_dates = trading_dates.iloc[self.warmup_days:]
             trading_dates = trading_dates.reset_index(drop=True)
 
-        # 获取再平衡日期（每月第一个交易日）
-        rebalance_dates = self._get_rebalance_dates(trading_dates)
+        # 获取再平衡日期
+        rebalance_dates = self._get_rebalance_dates(trading_dates, freq=rebalance_freq)
+
+        # 按频率换算周期参数
+        period_months = self._FREQ_TO_MONTHS.get(rebalance_freq, 1.0)
 
         if not rebalance_dates:
             return self._empty_result(strategy.name)
@@ -167,28 +180,42 @@ class BacktestEngine:
             period_hedge_payoff = 0.0
 
             if hedge_monthly_cost is not None and spy_series is not None:
-                # 扣除对冲成本
-                period_hedge_cost = hedge_monthly_cost
+                if use_bs_cost:
+                    # BS 公允价值模式：用公式计算 OTM put 权利金
+                    # K = S × (1 - otm_threshold)，与赔付函数使用相同的行权价
+                    spy_price_available = spy_series[spy_series.index <= rebal_date]
+                    if len(spy_price_available) > 0:
+                        spy_spot = spy_price_available.iloc[-1]
+                        otm_strike = spy_spot * (1 - hedge_otm_threshold)
+                        period_hedge_cost = _bs_put_premium(
+                            spy_spot, otm_strike, hedge_vol, period_months,
+                        )
+                    else:
+                        period_hedge_cost = hedge_monthly_cost * period_months
+                else:
+                    # 固定成本模式：月成本 × 周期长度
+                    period_hedge_cost = hedge_monthly_cost * period_months
                 portfolio_value *= (1 - period_hedge_cost)
                 hedge_costs.append({"date": rebal_date, "cost": period_hedge_cost})
 
-                # 用月末收盘价计算 SPY 月度收益，调用非线性赔付函数
+                # 计算 SPY 周期跌幅，调用非线性赔付函数
                 if spy_period_start_price is not None:
                     spy_available = spy_series[spy_series.index <= rebal_date]
                     if len(spy_available) > 0:
                         spy_current = spy_available.iloc[-1]
-                        spy_monthly_return = (spy_current / spy_period_start_price) - 1
+                        spy_period_return = (spy_current / spy_period_start_price) - 1
 
-                        # SPY 月跌幅超过 OTM 阈值 → 期权产生收益
-                        if spy_monthly_return < -hedge_otm_threshold:
-                            max_dd = abs(spy_monthly_return)
+                        # SPY 跌幅超过 OTM 阈值 → 期权产生收益
+                        if spy_period_return < -hedge_otm_threshold:
+                            max_dd = abs(spy_period_return)
                             period_hedge_payoff = _calc_option_payoff(
-                                max_dd, hedge_otm_threshold, hedge_monthly_cost
+                                max_dd, hedge_otm_threshold, period_hedge_cost,
+                                vol=hedge_vol, period_months=period_months,
                             )
                             portfolio_value *= (1 + period_hedge_payoff)
                             hedge_payoffs.append({
                                 "date": rebal_date,
-                                "spy_return": spy_monthly_return,
+                                "spy_return": spy_period_return,
                                 "payoff": period_hedge_payoff,
                             })
 
@@ -224,15 +251,38 @@ class BacktestEngine:
 
             current_weights = new_weights
 
+            # 再平衡后立即记录权益点（确保成本扣除和权重变化被捕捉）
+            equity_records.append({"date": rebal_date, "value": portfolio_value})
+
             # 确定本周期结束日期
             if i + 1 < len(rebalance_dates):
                 period_end = rebalance_dates[i + 1]
             else:
                 period_end = trading_dates.iloc[-1]
 
-            # 本周期内的交易日
-            period_mask = (trading_dates >= rebal_date) & (trading_dates < period_end)
+            # 本周期内的交易日（不含再平衡日，避免与上面的权益点重复）
+            period_mask = (trading_dates > rebal_date) & (trading_dates < period_end)
             period_dates = trading_dates[period_mask]
+
+            # 日频模式：period_dates 为空，直接计算再平衡日之间的收益
+            if len(period_dates) == 0 and i > 0:
+                prev_rebal = rebalance_dates[i - 1]
+                daily_return = 0.0
+                for symbol, weight in current_weights.items():
+                    if weight == 0 or symbol not in asset_indexed:
+                        continue
+                    series = asset_indexed[symbol]
+                    curr_available = series[series.index <= rebal_date]
+                    prev_available = series[series.index <= prev_rebal]
+                    if len(curr_available) == 0 or len(prev_available) == 0:
+                        continue
+                    curr_price = curr_available.iloc[-1]
+                    prev_price = prev_available.iloc[-1]
+                    if prev_price > 0:
+                        daily_return += weight * (curr_price / prev_price - 1)
+                portfolio_value *= (1 + daily_return)
+                equity_records[-1]["value"] = portfolio_value
+                return_records.append({"date": rebal_date, "return": daily_return})
 
             # 按日计算组合收益
             prev_date = rebal_date
@@ -298,23 +348,40 @@ class BacktestEngine:
             hedge_cost = getattr(strategy, "hedge_monthly_cost", None)
             hedge_otm = getattr(strategy, "hedge_otm_threshold", 0.05)
             hedge_lev = getattr(strategy, "hedge_leverage", 15.0)
+            hedge_vol = getattr(strategy, "hedge_vol", 0.20)
+            use_bs = getattr(strategy, "use_bs_cost", False)
+            rebal_freq = getattr(strategy, "rebalance_freq", "M")
             result = self.run(
                 strategy, all_data, start_date, end_date,
                 hedge_monthly_cost=hedge_cost,
                 hedge_otm_threshold=hedge_otm,
                 hedge_leverage=hedge_lev,
+                hedge_vol=hedge_vol,
+                use_bs_cost=use_bs,
+                rebalance_freq=rebal_freq,
             )
             results.append(result)
         return results
 
-    def _get_rebalance_dates(self, trading_dates: pd.Series) -> List[pd.Timestamp]:
-        """获取再平衡日期（每月第一个交易日）"""
+    def _get_rebalance_dates(
+        self, trading_dates: pd.Series, freq: str = "M"
+    ) -> List[pd.Timestamp]:
+        """获取再平衡日期
+
+        Args:
+            freq: "M"=每月首日, "W"=每周首日, "D"=每日
+        """
         dates = pd.to_datetime(trading_dates)
-        # 按年月分组，取每月第一个交易日
         df = pd.DataFrame({"date": dates})
-        df["year_month"] = df["date"].dt.to_period("M")
-        rebalance = df.groupby("year_month")["date"].first().tolist()
-        return rebalance
+
+        if freq == "D":
+            return df["date"].tolist()
+        elif freq == "W":
+            df["year_week"] = df["date"].dt.to_period("W")
+            return df.groupby("year_week")["date"].first().tolist()
+        else:  # "M"
+            df["year_month"] = df["date"].dt.to_period("M")
+            return df.groupby("year_month")["date"].first().tolist()
 
     def _calc_metrics(
         self, equity_curve: pd.Series, daily_returns: pd.Series

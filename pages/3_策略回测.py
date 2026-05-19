@@ -25,6 +25,8 @@ from core.strategy.strategies import (
     DrawdownControlStrategy,
     AntifragileStrategy,
     AntifragileAggressiveStrategy,
+    AntifragileWeeklyStrategy,
+    AntifragileDailyStrategy,
     TailRiskParityStrategy,
     DrawdownConstraintStrategy,
     STRATEGY_CATEGORIES,
@@ -52,6 +54,8 @@ STRATEGY_REGISTRY = {
     "回撤约束优化": DrawdownConstraintStrategy,
     "反脆弱策略": AntifragileStrategy,
     "反脆弱激进版": AntifragileAggressiveStrategy,
+    "反脆弱周频版": AntifragileWeeklyStrategy,
+    "反脆弱日频版": AntifragileDailyStrategy,
 }
 
 # 按分类分组的策略顺序
@@ -191,12 +195,22 @@ def render_strategy_card(result: BacktestResult):
 
     # 反脆弱策略：显示对冲参数
     if strategy_cls and hasattr(strategy_cls, "hedge_monthly_cost"):
-        cost_pct = strategy_cls.hedge_monthly_cost * 100
         otm_pct = strategy_cls.hedge_otm_threshold * 100
-        annual_cost = cost_pct * 12
+        vol_pct = getattr(strategy_cls, "hedge_vol", 0.20) * 100
+        use_bs = getattr(strategy_cls, "use_bs_cost", False)
+        freq = getattr(strategy_cls, "rebalance_freq", "M")
+        freq_label = {"M": "月", "W": "周", "D": "日"}.get(freq, "月")
+        freq_t = {"M": 12, "W": 52, "D": 252}.get(freq, 12)
+        if use_bs:
+            cost_desc = f"BS公允价值定价 (vol={vol_pct:.0f}%)"
+        else:
+            cost_pct = strategy_cls.hedge_monthly_cost * 100
+            annual_cost = cost_pct * 12
+            cost_desc = f"权利金 {cost_pct:.1f}%/月 ({annual_cost:.1f}%/年)"
         st.caption(
-            f"对冲参数: 权利金 {cost_pct:.1f}%/月 ({annual_cost:.1f}%/年) · OTM {otm_pct:.0f}% "
-            f"· BS 模型赔付（月末结算）"
+            f"对冲参数: {cost_desc}"
+            f" · OTM {otm_pct:.0f}%"
+            f" · {freq_label}频结算 (T=1/{freq_t})"
         )
 
     st.divider()
@@ -313,9 +327,13 @@ def main():
             # 反脆弱策略数据来源提示
             if cat_key == "反脆弱":
                 st.warning(
-                    "反脆弱策略：0.3%/月（年化 3.6%）+ 5% OTM。"
-                    "反脆弱激进版：0.5%/月（年化 6%）+ 3% OTM，更频繁触发。"
-                    "赔付均采用简化 Black-Scholes 公式（月末结算）。",
+                    "反脆弱策略参数说明：\n"
+                    "- 标准版: 5% OTM, 月频结算, vol=20%\n"
+                    "- 激进版: 3% OTM, 月频结算, vol=20%\n"
+                    "- 周频版: 3% OTM, 周频结算 (T=1/52), vol=20%\n"
+                    "- 日频版: 2% OTM, 日频结算 (T=1/252), vol=30%\n"
+                    "所有策略均用 BS 公式动态计算权利金成本，赔付仅计内在价值（无时间价值虚增）。\n"
+                    "买保险有成本，对冲策略收益低于纯双动量是正常的。",
                     icon="⚠️",
                 )
             st.divider()
@@ -397,9 +415,9 @@ def main():
     has_antifragile = any("反脆弱" in r.strategy_name for r in valid_results)
     if has_antifragile:
         st.info(
-            "  **反脆弱策略说明**: 模拟 SPY 月 put 期权，赔付采用简化 Black-Scholes 公式——"
-            "SPY 月末收盘跌幅超 OTM 阈值时产生凸性收益，跌幅越大收益加速增长。"
-            "标准版 5% OTM / 0.3%/月，激进版 3% OTM / 0.5%/月。"
+            "  **反脆弱策略说明**: 模拟 SPY put 期权，赔付采用简化 Black-Scholes 公式——"
+            "SPY 跌幅超 OTM 阈值时产生凸性收益，跌幅越大收益加速增长。"
+            "支持月/周/日三种结算频率，更高频可捕捉更细粒度的暴跌。"
             "如需精确回测，需接入付费期权数据源（ORATS、CBOE DataShop 等）。",
             icon="ℹ️",
         )

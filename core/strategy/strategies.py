@@ -521,7 +521,35 @@ class DrawdownControlStrategy(BaseStrategy):
         return weights
 
 
-class AntifragileStrategy(BaseStrategy):
+class _AntifragileBase:
+    """反脆弱策略共用的双动量权重逻辑"""
+
+    top_n: int = 3
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        sliced = _slice_data(all_data, current_date, lookback_days)
+        returns_12m = {}
+        for symbol, close in sliced.items():
+            if len(close) >= 252:
+                ret = (close.iloc[-1] / close.iloc[-252] - 1) * 100
+                returns_12m[symbol] = ret
+        if not returns_12m:
+            return {}
+        positive = {s: r for s, r in returns_12m.items() if r > 0}
+        if not positive:
+            return {}
+        ranked = sorted(positive.items(), key=lambda x: x[1], reverse=True)
+        selected = ranked[: self.top_n]
+        weight = 1.0 / len(selected)
+        return {s: weight for s, _ in selected}
+
+
+class AntifragileStrategy(_AntifragileBase, BaseStrategy):
     """反脆弱策略（塔勒布杠铃 + 尾部对冲）
 
     结构：
@@ -546,41 +574,14 @@ class AntifragileStrategy(BaseStrategy):
     # 尾部对冲参数（引擎通过 getattr 读取）
     # 赔付: 简化 Black-Scholes 公式计算 5% OTM 月 put 收益
     # 成本 0.3%/月（年化 ~3.6%），大跌时凸性收益可覆盖多年成本
-    hedge_monthly_cost: float = 0.003   # 每月 0.3% 权利金
+    hedge_monthly_cost: float = 0.003   # 每月 0.3% 权利金（备用，BS 模式下不使用）
     hedge_otm_threshold: float = 0.05   # 5% OTM
     hedge_leverage: float = 15.0        # 向后兼容参数，BS 公式不依赖此值
-
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        # 主仓：复用双动量逻辑
-        sliced = _slice_data(all_data, current_date, lookback_days)
-
-        returns_12m = {}
-        for symbol, close in sliced.items():
-            if len(close) >= 252:
-                ret = (close.iloc[-1] / close.iloc[-252] - 1) * 100
-                returns_12m[symbol] = ret
-
-        if not returns_12m:
-            return {}
-
-        positive = {s: r for s, r in returns_12m.items() if r > 0}
-
-        if not positive:
-            return {}
-
-        ranked = sorted(positive.items(), key=lambda x: x[1], reverse=True)
-        selected = ranked[: self.top_n]
-
-        weight = 1.0 / len(selected)
-        return {s: weight for s, _ in selected}
+    hedge_vol: float = 0.20             # BS 公式年化波动率
+    use_bs_cost: bool = True            # 用 BS 公式动态计算权利金成本
 
 
-class AntifragileAggressiveStrategy(BaseStrategy):
+class AntifragileAggressiveStrategy(_AntifragileBase, BaseStrategy):
     """反脆弱激进版（优化参数：低 OTM + 中等成本）
 
     与标准反脆弱的区别：
@@ -599,38 +600,68 @@ class AntifragileAggressiveStrategy(BaseStrategy):
     top_n: int = 3
 
     # 优化后的对冲参数（经参数扫描验证）
-    hedge_monthly_cost: float = 0.005   # 每月 0.5% 权利金（年化 6%）
+    hedge_monthly_cost: float = 0.005   # 每月 0.5% 权利金（备用，BS 模式下不使用）
     hedge_otm_threshold: float = 0.03   # 3% OTM（更频繁触发）
     hedge_leverage: float = 15.0        # 向后兼容参数
+    hedge_vol: float = 0.20             # BS 公式年化波动率
+    use_bs_cost: bool = True            # 用 BS 公式动态计算权利金成本
 
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        # 主仓：复用双动量逻辑
-        sliced = _slice_data(all_data, current_date, lookback_days)
 
-        returns_12m = {}
-        for symbol, close in sliced.items():
-            if len(close) >= 252:
-                ret = (close.iloc[-1] / close.iloc[-252] - 1) * 100
-                returns_12m[symbol] = ret
+class AntifragileWeeklyStrategy(_AntifragileBase, BaseStrategy):
+    """反脆弱周频版（每周结算尾部对冲）
 
-        if not returns_12m:
-            return {}
+    与标准反脆弱的区别：
+    - 结算频率：每周（每周最后交易日）而非每月
+    - OTM 阈值：3%（周跌幅通常 < 月跌幅，降低阈值提高触发频率）
+    - T=1/52（周 put 期权），权利金按周扣减
+    - 年化成本与标准版相当（~3.6%），但更频繁触发赔付
 
-        positive = {s: r for s, r in returns_12m.items() if r > 0}
+    参数设计思路：
+    - 周度 SPY 标准差 ~1.5%，3% OTM ≈ 2σ
+    - 周 put 比月 put 便宜（时间短），但需要更频繁购买
+    - 引擎自动将月成本换算为周成本：0.3% / 4.33 ≈ 0.069%/周
+    """
 
-        if not positive:
-            return {}
+    name = "反脆弱周频版"
+    description = "每周结算 SPY 看跌期权，3% OTM，T=1/52，更频繁触发对冲"
+    category = "反脆弱"
+    rebalance_freq: str = "W"
 
-        ranked = sorted(positive.items(), key=lambda x: x[1], reverse=True)
-        selected = ranked[: self.top_n]
+    hedge_monthly_cost: float = 0.003   # 月成本 0.3%（备用，BS 模式下不使用）
+    hedge_otm_threshold: float = 0.03   # 3% OTM
+    hedge_leverage: float = 15.0
+    hedge_vol: float = 0.20             # BS 公式年化波动率
+    use_bs_cost: bool = True            # 用 BS 公式动态计算权利金成本
 
-        weight = 1.0 / len(selected)
-        return {s: weight for s, _ in selected}
+
+class AntifragileDailyStrategy(_AntifragileBase, BaseStrategy):
+    """反脆弱日频版（每日结算尾部对冲）
+
+    与标准反脆弱的区别：
+    - 结算频率：每日而非每月
+    - OTM 阈值：2%（日跌幅通常很小，阈值需更低）
+    - T=1/252（日 put 期权），权利金按日扣减
+    - vol=30%（日频期权隐含波动率高于月频，反映短周期波动率期限结构）
+    - 使用 BS 公允价值计算权利金（而非固定比例），反映日频期权真实成本
+
+    参数设计思路：
+    - 日度 SPY 标准差 ~1%，2% OTM ≈ 2σ
+    - 日频期权真实 IV 远高于月频（短周期 vol 期限结构上翘）
+    - 固定成本模型在 T→0 时严重低估日频期权成本（差 26 倍）
+    - BS 公允价值模式自动计算 OTM put 权利金，消除成本低估
+    - 2% OTM 在 BS 公允价值下接近盈亏平衡，更符合真实市场
+    """
+
+    name = "反脆弱日频版"
+    description = "每日结算 SPY 看跌期权，2% OTM，T=1/252，vol=30%，BS公允价值定价"
+    category = "反脆弱"
+    rebalance_freq: str = "D"
+
+    hedge_monthly_cost: float = 0.006   # 备用固定成本（BS 模式下不使用）
+    hedge_otm_threshold: float = 0.02   # 2% OTM（BS公允价值下接近盈亏平衡）
+    hedge_leverage: float = 15.0
+    hedge_vol: float = 0.30             # 日频期权 IV 高于月频
+    use_bs_cost: bool = True            # 用 BS 公式动态计算权利金成本
 
 
 class TailRiskParityStrategy(BaseStrategy):
