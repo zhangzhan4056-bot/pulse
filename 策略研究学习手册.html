@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略研究学习手册 — Market Pulse</title>
+<style>
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #242836;
+  --border: #2e3348; --text: #e4e6f0; --text2: #9198af;
+  --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+  --yellow: #eab308; --purple: #a855f7; --cyan: #06b6d4;
+  --orange: #f97316; --pink: #ec4899;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; font-size: 15px; }
+
+/* Layout */
+.layout { display: flex; min-height: 100vh; }
+.nav { width: 260px; background: var(--surface); border-right: 1px solid var(--border); padding: 24px 16px; position: fixed; top: 0; left: 0; bottom: 0; overflow-y: auto; z-index: 100; }
+.main { margin-left: 260px; flex: 1; padding: 40px 48px; max-width: 960px; }
+
+/* Navigation */
+.nav h3 { font-size: 0.85rem; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+.nav a { display: block; padding: 6px 12px; color: var(--text2); text-decoration: none; font-size: 0.85rem; border-radius: 6px; margin-bottom: 2px; transition: all 0.15s; }
+.nav a:hover { background: var(--surface2); color: var(--text); }
+.nav a.active { background: rgba(59,130,246,0.15); color: var(--blue); font-weight: 600; }
+.nav .nav-group { margin-bottom: 20px; }
+.nav .nav-group-title { font-size: 0.75rem; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; padding: 0 12px; margin-bottom: 6px; font-weight: 600; }
+
+/* Header */
+.header { text-align: center; padding: 60px 20px 40px; }
+.header h1 { font-size: 2.5rem; font-weight: 700; background: linear-gradient(135deg, var(--blue), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.header p { color: var(--text2); font-size: 1.1rem; margin-top: 8px; }
+
+/* Chapters */
+.chapter { margin: 48px 0; scroll-margin-top: 24px; }
+.chapter-title { font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; padding-bottom: 12px; border-bottom: 2px solid var(--border); }
+.chapter-subtitle { color: var(--text2); font-size: 0.95rem; margin-bottom: 24px; }
+h3 { font-size: 1.2rem; font-weight: 600; margin: 28px 0 12px; color: var(--text); }
+h4 { font-size: 1rem; font-weight: 600; margin: 20px 0 8px; color: var(--text2); }
+p { margin: 8px 0; }
+
+/* Category cards */
+.cat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 20px 0; }
+.cat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.cat-card h4 { margin: 0 0 8px; font-size: 1.1rem; }
+.cat-card .subtitle { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; }
+.cat-card .desc { font-size: 0.9rem; line-height: 1.6; }
+
+/* Category badges */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+.badge-trend { background: rgba(59,130,246,0.15); color: var(--blue); }
+.badge-mean { background: rgba(234,179,8,0.15); color: var(--yellow); }
+.badge-risk { background: rgba(168,85,247,0.15); color: var(--purple); }
+.badge-anti { background: rgba(239,68,68,0.15); color: var(--red); }
+
+/* Term cards */
+.term-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin: 12px 0; }
+.term-card .term-name { font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; }
+.term-card .term-en { color: var(--text2); font-size: 0.85rem; margin-bottom: 8px; }
+.term-card .term-def { font-size: 0.95rem; margin-bottom: 12px; }
+.term-card .formula { background: var(--surface2); border-radius: 8px; padding: 12px 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; margin: 8px 0; overflow-x: auto; }
+.term-card .code-ref { color: var(--text2); font-size: 0.8rem; margin-top: 8px; }
+.term-card .code-ref code { color: var(--cyan); background: var(--surface2); padding: 1px 6px; border-radius: 4px; }
+
+/* Strategy cards */
+.strat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin: 24px 0; }
+.strat-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.strat-header h3 { margin: 0; font-size: 1.3rem; }
+.strat-desc { color: var(--text2); margin-bottom: 20px; }
+
+/* Flow diagram */
+.flow { background: var(--surface2); border-radius: 10px; padding: 16px 20px; margin: 12px 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.82rem; line-height: 1.9; overflow-x: auto; }
+.flow .step { display: flex; align-items: flex-start; gap: 10px; margin: 2px 0; }
+.flow .num { background: var(--blue); color: #fff; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+.flow .highlight { color: var(--green); font-weight: 600; }
+.flow .warn { color: var(--yellow); font-weight: 600; }
+.flow .arrow { color: var(--text2); }
+
+/* Metrics grid */
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 16px 0; }
+.metric { background: var(--surface2); border-radius: 10px; padding: 14px; text-align: center; }
+.metric .value { font-size: 1.3rem; font-weight: 700; }
+.metric .label { font-size: 0.7rem; color: var(--text2); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.positive { color: var(--green); } .negative { color: var(--red); }
+
+/* Two-column info boxes */
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+.info-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; }
+.info-box h5 { font-size: 0.85rem; font-weight: 600; margin-bottom: 8px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+.info-box ul { list-style: none; padding: 0; }
+.info-box li { padding: 3px 0; font-size: 0.9rem; }
+.info-box li::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 8px; }
+.info-box.good li::before { background: var(--green); }
+.info-box.bad li::before { background: var(--red); }
+.info-box.neutral li::before { background: var(--yellow); }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 16px 0; }
+th { background: var(--surface2); padding: 10px 14px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); white-space: nowrap; }
+td { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+tr:hover { background: var(--surface); }
+
+/* SVG charts */
+.chart-container { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 20px 0; text-align: center; }
+.chart-container svg { max-width: 100%; }
+
+/* Regime cards */
+.regime-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0; }
+.regime-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.regime-card h5 { font-size: 0.95rem; margin-bottom: 8px; }
+.regime-card .alloc { font-size: 0.85rem; color: var(--text2); }
+
+/* Callout */
+.callout { background: rgba(59,130,246,0.08); border-left: 3px solid var(--blue); border-radius: 0 8px 8px 0; padding: 16px 20px; margin: 16px 0; font-size: 0.9rem; }
+.callout.warn { background: rgba(234,179,8,0.08); border-left-color: var(--yellow); }
+.callout.success { background: rgba(34,197,94,0.08); border-left-color: var(--green); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .nav { display: none; }
+  .main { margin-left: 0; padding: 20px; }
+  .cat-grid, .info-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ============ SIDE NAVIGATION ============ -->
+<nav class="nav">
+  <div style="padding: 0 12px 20px;">
+    <div style="font-size: 1rem; font-weight: 700; color: var(--text);">策略研究学习手册</div>
+    <div style="font-size: 0.75rem; color: var(--text2); margin-top: 4px;">Market Pulse</div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">基础</div>
+    <a href="#ch1">第一章 策略分类框架</a>
+    <a href="#ch2">第二章 核心术语与计算</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">趋势动量</div>
+    <a href="#ch3">第三章 趋势动量策略</a>
+    <a href="#s1">  趋势跟踪</a>
+    <a href="#s2">  双动量</a>
+    <a href="#s3">  动量+波动率</a>
+    <a href="#s4">  回撤控制</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">均值回归</div>
+    <a href="#ch4">第四章 均值回归策略</a>
+    <a href="#s5">  均值回归</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">风险配置</div>
+    <a href="#ch5">第五章 风险配置策略</a>
+    <a href="#s6">  风险平价</a>
+    <a href="#s7">  低相关性组合</a>
+    <a href="#s8">  尾部风险平价</a>
+    <a href="#s9">  回撤约束优化</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">反脆弱</div>
+    <a href="#ch6">第六章 反脆弱策略</a>
+    <a href="#s10">  标准版</a>
+    <a href="#s11">  激进版</a>
+    <a href="#s12">  周频版</a>
+    <a href="#s13">  日频版</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">进阶</div>
+    <a href="#ch7">第七章 策略组合与市场体制</a>
+    <a href="#ch8">第八章 从回测到实盘</a>
+  </div>
+</nav>
+
+<!-- ============ MAIN CONTENT ============ -->
+<div class="main">
+
+<div class="header">
+  <h1>策略研究学习手册</h1>
+  <p>从概念到实现 — 覆盖 4 大策略类型、13 种配置策略、12 个核心指标</p>
+  <p style="font-size: 0.85rem; color: var(--text2); margin-top: 12px;">基于 Market Pulse 项目的实际代码和回测数据</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 1: 策略分类框架 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch1">
+  <h2 class="chapter-title">第一章 策略分类框架</h2>
+  <p class="chapter-subtitle">所有量化策略都在回答同一个问题：明天的价格会怎样？但回答的方式截然不同。</p>
+
+  <p>策略研究的第一步不是背公式，而是理解<strong>你在赌什么</strong>。每种策略背后都有一个关于市场本质的核心假设——假设决定了策略在什么环境下赚钱、什么环境下亏钱。</p>
+
+  <div class="cat-grid">
+    <div class="cat-card">
+      <h4><span class="badge badge-trend">趋势动量</span></h4>
+      <div class="subtitle">"涨的继续涨"</div>
+      <div class="desc">
+        <strong>核心假设</strong>：价格有惯性。过去一段时间涨得好的资产，未来大概率继续涨。<br><br>
+        <strong>市场观</strong>：牛市大赚，熊市大亏，震荡市被反复割。趋势策略本质上是在赌市场有方向。<br><br>
+        <strong>典型指标</strong>：移动平均线、MACD、动量得分<br><br>
+        <strong>代表人物</strong>：Gary Antonacci（双动量）、AQR Capital
+      </div>
+    </div>
+    <div class="cat-card">
+      <h4><span class="badge badge-mean">均值回归</span></h4>
+      <div class="subtitle">"跌多了会反弹"</div>
+      <div class="desc">
+        <strong>核心假设</strong>：价格偏离均值后会回归。涨过头会跌，跌过头会涨。<br><br>
+        <strong>市场观</strong>：趋势策略的天然对冲。牛市中可能踏空，但熊市底部抄底获利。震荡市是主场。<br><br>
+        <strong>典型指标</strong>：RSI（相对强弱指数）、布林带<br><br>
+        <strong>代表人物</strong>：DeBondt & Thaler（过度反应假说）
+      </div>
+    </div>
+    <div class="cat-card">
+      <h4><span class="badge badge-risk">风险配置</span></h4>
+      <div class="subtitle">"不预测，只分配"</div>
+      <div class="desc">
+        <strong>核心假设</strong>：不预测方向，通过数学优化风险分配来获取收益。低波、低相关性资产长期跑赢。<br><br>
+        <strong>市场观</strong>：牛市跑输，但回撤小、夏普高。依赖分散化和风险平衡。<br><br>
+        <strong>典型指标</strong>：波动率、相关性矩阵、CVaR<br><br>
+        <strong>代表人物</strong>：Bridgewater（全天候）、Edward Thorp
+      </div>
+    </div>
+    <div class="cat-card">
+      <h4><span class="badge badge-anti">反脆弱</span></h4>
+      <div class="subtitle">"从混乱中受益"</div>
+      <div class="desc">
+        <strong>核心假设</strong>：不预测黑天鹅，而是构建凸性收益结构——平时小亏（保险费），暴跌时大赚（赔付）。<br><br>
+        <strong>市场观</strong>：为尾部风险支付溢价。多数时间跑输纯动量策略，但极端市场中提供保护。<br><br>
+        <strong>典型工具</strong>：OTM put 期权、Black-Scholes 定价<br><br>
+        <strong>代表人物</strong>：Nassim Taleb（《反脆弱》）、Universa Investments
+      </div>
+    </div>
+  </div>
+
+  <h3>策略之间的对冲关系</h3>
+  <p>这四种策略不是互相替代的，而是互相<strong>对冲</strong>的：</p>
+  <div class="callout">
+    <strong>趋势动量 + 均值回归 = 天然对冲</strong><br>
+    动量在趋势市赚钱、震荡市亏钱；均值回归在震荡市赚钱、趋势市亏钱。两者组合可以平滑收益曲线。<br><br>
+    <strong>风险配置 + 反脆弱 = 尾部保护</strong><br>
+    风险配置控制日常波动，反脆弱控制极端下跌。前者管"温差"，后者管"地震"。
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 2: 核心术语与计算 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch2">
+  <h2 class="chapter-title">第二章 核心术语与计算</h2>
+  <p class="chapter-subtitle">理解策略之前，先理解语言。每个术语都附带公式、直觉解释和代码位置。</p>
+
+  <!-- 动量 -->
+  <div class="term-card">
+    <div class="term-name">动量 Momentum</div>
+    <div class="term-en">过去涨的继续涨</div>
+    <div class="term-def">
+      动量是最古老、最robust的量化因子之一。核心观察：过去 3-12 个月涨得好的资产，未来 3-12 个月大概率继续跑赢。这个现象在全球股票、债券、商品、外汇中都存在，跨越了 200 多年的数据。
+    </div>
+    <div class="formula">
+      单周期回报 = (Close[t] / Close[t-n] - 1) × 100<br><br>
+      复合动量得分 = 1M×0.2 + 3M×0.3 + 6M×0.3 + 12M×0.2<br>
+      映射到 0-100: score = (composite + 20) / 40 × 100, clamp [0, 100]
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_momentum_score()</code>, <code>calc_returns()</code></div>
+    <p style="margin-top: 12px;"><strong>为什么有效？</strong> 行为金融学解释：投资者对好消息反应不足（underreaction），价格调整滞后于基本面。机构解释：资金流入有惯性，基金经理抱团。</p>
+  </div>
+
+  <!-- 均值回归 -->
+  <div class="term-card">
+    <div class="term-name">均值回归 Mean Reversion</div>
+    <div class="term-en">偏离过大必回归</div>
+    <div class="term-def">
+      价格偏离历史均幅后，倾向于回归。涨过头的会跌回来，跌过头的会涨回来。RSI 是最常用的均值回归指标——RSI > 70 表示"超买"（可能要跌），RSI < 30 表示"超卖"（可能要涨）。
+    </div>
+    <div class="formula">
+      RS = 平均上涨幅度 / 平均下跌幅度（过去 14 天）<br>
+      RSI = 100 - 100 / (1 + RS)<br><br>
+      RSI > 70 → 超买（卖出信号）<br>
+      RSI < 30 → 超卖（买入信号）
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_rsi()</code></div>
+    <p style="margin-top: 12px;"><strong>为什么有效？</strong> 市场过度反应：恐慌性抛售导致价格低于内在价值，贪婪性追涨导致价格高于内在价值。但注意：在强趋势中，均值回归会"接飞刀"——RSI 20 的资产可能继续跌到 RSI 10。</p>
+  </div>
+
+  <!-- 波动率 -->
+  <div class="term-card">
+    <div class="term-name">波动率 Volatility</div>
+    <div class="term-en">价格变动的剧烈程度</div>
+    <div class="term-def">
+      衡量资产价格变动的"温度"。波动率高意味着价格剧烈波动（风险大），波动率低意味着价格平稳。年化波动率是将日度标准差放大到年度尺度。
+    </div>
+    <div class="formula">
+      日度标准差 = std(daily_returns, window=20)<br>
+      年化波动率 = 日度标准差 × √252 × 100%<br><br>
+      （252 = 一年的交易日数）
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_volatility()</code></div>
+    <p style="margin-top: 12px;"><strong>在策略中的作用：</strong> 风险平价策略用波动率倒数做仓位分配（低波资产多配）；动量+波动率策略用波动率控制总仓位（高波时减仓）。</p>
+  </div>
+
+  <!-- 回撤 -->
+  <div class="term-card">
+    <div class="term-name">回撤 Drawdown</div>
+    <div class="term-en">从高点下跌的幅度</div>
+    <div class="term-def">
+      回撤是投资者最直观感受到的"痛"。它不是从买入价算的亏损，而是从历史最高点算的下跌。最大回撤是历史上最深的那一次下跌。
+    </div>
+    <div class="formula">
+      回撤[t] = (Price[t] - Peak[t]) / Peak[t]<br>
+      其中 Peak[t] = max(Price[0..t])<br><br>
+      最大回撤 = min(回撤序列) × 100%
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_drawdown()</code>, <code>calc_max_drawdown()</code></div>
+    <p style="margin-top: 12px;"><strong>在策略中的作用：</strong> 回撤控制策略用 SPY 回撤阈值决定仓位（-5% 减仓，-10% 清仓）。回撤约束优化用资产历史最大回撤做筛选（剔除回撤超 -40% 的资产）。</p>
+  </div>
+
+  <!-- 夏普比率 -->
+  <div class="term-card">
+    <div class="term-name">夏普比率 Sharpe Ratio</div>
+    <div class="term-en">每单位风险的超额收益</div>
+    <div class="term-def">
+      最广泛使用的风险调整收益指标。夏普比率 = 1 表示每承担 1% 的波动率，获得 1% 的超额收益。夏普 > 1 是优秀，> 2 是顶级，> 3 可能是过拟合。
+    </div>
+    <div class="formula">
+      Sharpe = (年化收益 - 无风险利率) / 年化波动率<br><br>
+      本项目默认：无风险利率 = 3%
+    </div>
+    <div class="code-ref">代码位置: <code>core/backtest/engine.py</code> → <code>_calc_metrics()</code></div>
+    <p style="margin-top: 12px;"><strong>局限性：</strong> 夏普比率假设收益正态分布，但实际收益有"肥尾"——极端亏损比正态分布预测的更频繁。CVaR 是更好的尾部风险指标。</p>
+  </div>
+
+  <!-- CVaR -->
+  <div class="term-card">
+    <div class="term-name">CVaR 条件风险价值</div>
+    <div class="term-en">尾部平均损失 — 比最大回撤更稳健</div>
+    <div class="term-def">
+      CVaR（Conditional Value at Risk）回答的问题是："当情况变糟时，平均会亏多少？"它比最大回撤更稳健——最大回撤只看最深一次，CVaR 看最差 5% 情况的平均值。
+    </div>
+    <div class="formula">
+      1. 计算日度收益率序列<br>
+      2. 取 VaR(5%) = 第 5 百分位数的损失<br>
+      3. CVaR = 所有超过 VaR 的损失的平均值<br>
+      4. 年化: CVaR_annual = CVaR_daily × √252 × 100%
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_cvar()</code></div>
+    <p style="margin-top: 12px;"><strong>在策略中的作用：</strong> 尾部风险平价策略用 CVaR 做选股——选择"每单位尾部风险获得最高动量收益"的资产（得分 = momentum / CVaR）。</p>
+  </div>
+
+  <!-- 相关性 -->
+  <div class="term-card">
+    <div class="term-name">相关性 Correlation</div>
+    <div class="term-en">资产联动程度 — 分散化的基础</div>
+    <div class="term-def">
+      相关性衡量两个资产价格变动的同步程度。相关性 = 1 表示完全同涨同跌，= 0 表示无关，= -1 表示完全反向。分散化的本质就是把低相关性的资产组合在一起。
+    </div>
+    <div class="formula">
+      ρ(X, Y) = Cov(X, Y) / (σ_X × σ_Y)<br><br>
+      取值范围: [-1, 1]<br>
+      滚动窗口: 60 个交易日
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_correlation_matrix()</code></div>
+    <p style="margin-top: 12px;"><strong>关键洞察：</strong> SPY 和 TLT 的相关性在正常市场中为负（股跌债涨），但在通胀环境中可能转正（股债双杀）。这就是为什么需要动态计算相关性，而不是假设固定值。</p>
+  </div>
+
+  <!-- MACD -->
+  <div class="term-card">
+    <div class="term-name">MACD</div>
+    <div class="term-en">趋势确认指标 — DIF / DEA / 柱状图</div>
+    <div class="term-def">
+      MACD（Moving Average Convergence Divergence）通过两条指数移动平均线的差值来判断趋势方向和强度。金叉（DIF 上穿 DEA）是买入信号，死叉是卖出信号。
+    </div>
+    <div class="formula">
+      DIF = EMA(12) - EMA(26)<br>
+      DEA = EMA(DIF, 9)<br>
+      柱状图 = (DIF - DEA) × 2<br><br>
+      金叉: DIF 从下往上穿过 DEA → 买入<br>
+      死叉: DIF 从上往下穿过 DEA → 卖出
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_macd()</code></div>
+  </div>
+
+  <!-- MA 对齐 -->
+  <div class="term-card">
+    <div class="term-name">MA 对齐 Moving Average Alignment</div>
+    <div class="term-en">趋势的"骨架" — 短中长期均线排列</div>
+    <div class="term-def">
+      当短期均线 > 中期均线 > 长期均线时，称为"多头排列"——趋势向上，像一副整齐的骨架。反过来是"空头排列"。均线交织表示方向不明。
+    </div>
+    <div class="formula">
+      MA20 > MA50 > MA200 → 多头排列（看涨）<br>
+      MA20 < MA50 < MA200 → 空头排列（看跌）<br>
+      其他情况 → 交织（方向不明）
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_ma_alignment()</code></div>
+  </div>
+
+  <!-- ATR -->
+  <div class="term-card">
+    <div class="term-name">ATR 真实波幅</div>
+    <div class="term-en">Average True Range — 衡量市场"温度"</div>
+    <div class="term-def">
+      ATR 衡量价格在一段时间内的实际波动范围，考虑了跳空缺口。比波动率更直观——ATR 是绝对值（美元/点数），波动率是百分比。
+    </div>
+    <div class="formula">
+      True Range = max(<br>
+      &nbsp;&nbsp;High - Low,<br>
+      &nbsp;&nbsp;|High - Prev_Close|,<br>
+      &nbsp;&nbsp;|Low - Prev_Close|<br>
+      )<br>
+      ATR = SMA(True Range, 14)
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_atr()</code></div>
+  </div>
+
+  <!-- ADX -->
+  <div class="term-card">
+    <div class="term-name">ADX 趋势强度</div>
+    <div class="term-en">Average Directional Index — 区分趋势市和震荡市</div>
+    <div class="term-def">
+      ADX 只衡量趋势的<strong>强度</strong>，不衡量方向。ADX > 25 表示强趋势（适合趋势策略），ADX < 20 表示无趋势（适合均值回归策略）。
+    </div>
+    <div class="formula">
+      +DM = max(High - Prev_High, 0)  （正向运动）<br>
+      -DM = max(Prev_Low - Low, 0)    （负向运动）<br>
+      DX = |+DI - -DI| / (+DI + -DI) × 100<br>
+      ADX = SMA(DX, 14)
+    </div>
+    <div class="code-ref">代码位置: <code>core/strategy/indicators.py</code> → <code>calc_adx()</code></div>
+  </div>
+
+  <!-- Black-Scholes -->
+  <div class="term-card">
+    <div class="term-name">Black-Scholes 公式</div>
+    <div class="term-en">期权定价的基石 — 反脆弱策略的核心</div>
+    <div class="term-def">
+      Black-Scholes 是期权定价的标准模型。反脆弱策略用它来计算 OTM put 的公允价值（保险费），以及到期日的赔付金额。
+    </div>
+    <div class="formula">
+      d1 = [ln(S/K) + (r + 0.5σ²)T] / (σ√T)<br>
+      d2 = d1 - σ√T<br><br>
+      Put = K·e^(-rT)·N(-d2) - S·N(-d1)<br><br>
+      其中:<br>
+      S = 标的价格（SPY）<br>
+      K = 行权价 = S × (1 - OTM%)<br>
+      σ = 年化波动率<br>
+      T = 到期时间（年）<br>
+      r = 无风险利率<br>
+      N() = 标准正态分布累积函数
+    </div>
+    <div class="code-ref">代码位置: <code>core/backtest/engine.py</code> → <code>_bs_put_premium()</code></div>
+    <p style="margin-top: 12px;"><strong>直觉理解：</strong> BS 公式告诉你"为一份保险付多少钱是公平的"。波动率 σ 越高、到期时间 T 越长，保险越贵。OTM 越深（行权价越低），保险越便宜——但赔付触发门槛也越高。</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 3: 趋势动量策略 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch3">
+  <h2 class="chapter-title">第三章 趋势动量策略</h2>
+  <p class="chapter-subtitle">"涨的继续涨" — 趋势动量是量化投资中最经典、研究最多的因子</p>
+
+  <p>趋势动量策略的核心逻辑：<strong>识别趋势 → 跟随趋势 → 在趋势反转时退出</strong>。区别在于如何定义"趋势"和"反转"。</p>
+
+  <!-- 策略 1: 趋势跟踪 -->
+  <div class="strat-card" id="s1">
+    <div class="strat-header">
+      <span class="badge badge-trend">趋势动量</span>
+      <h3>趋势跟踪策略</h3>
+    </div>
+    <div class="strat-desc">均线排列 + MACD 双确认。当 MA20 > MA50 > MA200（多头排列）且 MACD 柱状图为正时，认为趋势确认。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 对每个资产计算 MA20、MA50、MA200</div>
+      <div class="step"><span class="num">2</span> 检查是否<span class="highlight">多头排列</span>（MA20 > MA50 > MA200）</div>
+      <div class="step"><span class="num">3</span> 计算 MACD 柱状图，检查是否 <span class="highlight">> 0</span></div>
+      <div class="step"><span class="num">4</span> 多头排列 + MACD 正 → <span class="highlight">满权重</span>（1 单位）</div>
+      <div class="step"><span class="num">5</span> 仅多头排列（MACD 不正）→ <span class="warn">半权重</span>（0.5 单位）</div>
+      <div class="step"><span class="num">6</span> 归一化：总权重 = 1.0</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>双确认机制减少假信号</li>
+          <li>均线排列是趋势的"骨架"，MACD 是"肌肉"</li>
+          <li>半权重机制降低不确定时期的暴露</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>震荡市：均线反复交叉，频繁假突破</li>
+          <li>V 型反转：均线滞后，错过底部</li>
+          <li>需要 200 天数据预热，新资产无法立即参与</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 2: 双动量 -->
+  <div class="strat-card" id="s2">
+    <div class="strat-header">
+      <span class="badge badge-trend">趋势动量</span>
+      <h3>双动量策略</h3>
+    </div>
+    <div class="strat-desc">Gary Antonacci 经典策略。两层过滤：先用<strong>绝对动量</strong>过滤掉下跌资产（12 个月回报 > 0），再用<strong>相对动量</strong>选出最强的 top N，等权分配。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 计算每个资产的 12 个月回报: <span class="highlight">(Close[-1] / Close[-252] - 1)</span></div>
+      <div class="step"><span class="num">2</span> <span class="warn">绝对动量过滤</span>: 只保留回报 > 0 的资产</div>
+      <div class="step"><span class="num">3</span> 如果没有正回报资产 → <span class="warn">100% 现金</span>（空仓）</div>
+      <div class="step"><span class="num">4</span> <span class="highlight">相对动量排序</span>: 按回报降序，取前 3 名</div>
+      <div class="step"><span class="num">5</span> 等权分配: 每个资产 1/3</div>
+    </div>
+
+    <div class="callout">
+      <strong>为什么叫"双动量"？</strong><br>
+      第一层"绝对动量"确保你只在上涨市场中持有资产（避开熊市）。第二层"相对动量"确保你持有最强的资产（优中选优）。两层保护，双重过滤。
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>绝对动量 = 熊市过滤器，大幅降低回撤</li>
+          <li>等权分配简单 robust，不易过拟合</li>
+          <li>学术验证跨越 200 年数据、全球市场</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>急速反转（如 2020 年 3 月）：动量信号滞后</li>
+          <li>震荡市中所有资产回报接近 0，频繁进出</li>
+          <li>12 个月回望期太长，错过短期拐点</li>
+        </ul>
+      </div>
+    </div>
+
+    <h4>回测表现（2015-2025）</h4>
+    <div class="metrics">
+      <div class="metric"><div class="value positive">+8.42%</div><div class="label">年化收益</div></div>
+      <div class="metric"><div class="value negative">-23.18%</div><div class="label">最大回撤</div></div>
+      <div class="metric"><div class="value">0.35</div><div class="label">夏普比率</div></div>
+      <div class="metric"><div class="value">15.70%</div><div class="label">年化波动率</div></div>
+    </div>
+  </div>
+
+  <!-- 策略 3: 动量+波动率 -->
+  <div class="strat-card" id="s3">
+    <div class="strat-header">
+      <span class="badge badge-trend">趋势动量</span>
+      <h3>动量 + 波动率过滤</h3>
+    </div>
+    <div class="strat-desc">动量选股 + 波动率控仓。选出最强动量资产，但根据波动率动态调整总仓位——市场"发烧"时自动减仓。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 计算所有资产的<span class="highlight">复合动量得分</span>（0-100）</div>
+      <div class="step"><span class="num">2</span> 选取得分 ≥ 50 的前 3 名</div>
+      <div class="step"><span class="num">3</span> 计算入选资产的 20 日年化波动率</div>
+      <div class="step"><span class="num">4</span> <span class="warn">总仓位 = min(1.0, 目标波动率 / 平均波动率)</span></div>
+      <div class="step"><span class="num">5</span> 资产内按<span class="highlight">波动率倒数</span>分配（低波多配）</div>
+      <div class="step"><span class="num">6</span> 最终权重 = 资产权重 × 总仓位</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>动量选股捕捉趋势</li>
+          <li>波动率控仓在高波环境中自动降风险</li>
+          <li>低波多配减少组合波动</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>低波动但持续下跌的市场（阴跌）</li>
+          <li>动量得分和波动率同时上升时仓位骤降</li>
+          <li>目标波动率 12% 在低波环境中可能过度保守</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 4: 回撤控制 -->
+  <div class="strat-card" id="s4">
+    <div class="strat-header">
+      <span class="badge badge-trend">趋势动量</span>
+      <h3>回撤控制策略</h3>
+    </div>
+    <div class="strat-desc">动量选股 + SPY 回撤阈值减仓。映射风控规则：-10% 减半仓，-15% 清仓。用 SPY 回撤作为组合风险的代理指标。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 动量选股：得分 > 50 的前 3 名，等权</div>
+      <div class="step"><span class="num">2</span> 计算 SPY 当前回撤: <span class="highlight">(SPY / SPY_peak - 1) × 100</span></div>
+      <div class="step"><span class="num">3</span> 回撤 → 仓位映射:</div>
+      <div class="step" style="padding-left: 34px;">DD > -5%: <span class="highlight">100%</span> 仓位</div>
+      <div class="step" style="padding-left: 34px;">DD -5% ~ -8%: <span class="warn">50%</span> 仓位</div>
+      <div class="step" style="padding-left: 34px;">DD -8% ~ -10%: <span class="warn">20%</span> 仓位</div>
+      <div class="step" style="padding-left: 34px;">DD < -10%: <span class="warn">0%</span>（全现金）</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>系统化减仓，避免"扛单"心理</li>
+          <li>用 SPY 做代理，不需要逐个资产监控</li>
+          <li>阈值可映射到具体风控规则</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>SPY 不是所有资产的完美代理</li>
+          <li>V 型反弹时已经清仓，错过回血</li>
+          <li>阈值是静态的，不同市场环境的"正常回撤"不同</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 4: 均值回归策略 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch4">
+  <h2 class="chapter-title">第四章 均值回归策略</h2>
+  <p class="chapter-subtitle">"跌多了会反弹" — 趋势策略的天然对冲</p>
+
+  <p>均值回归和趋势动量是一枚硬币的两面。动量在趋势市赚钱，均值回归在震荡市赚钱。两者的组合可以平滑收益曲线。</p>
+
+  <!-- 策略 5: 均值回归 -->
+  <div class="strat-card" id="s5">
+    <div class="strat-header">
+      <span class="badge badge-mean">均值回归</span>
+      <h3>均值回归策略</h3>
+    </div>
+    <div class="strat-desc">基于 RSI 的反向交易。RSI 超卖（< 30）时重仓买入，RSI 正常时中等仓位，RSI 超买（> 70）时清仓。核心假设：价格偏离过大后会回归均值。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 计算每个资产的 14 日 RSI</div>
+      <div class="step"><span class="num">2</span> RSI → 权重映射:</div>
+      <div class="step" style="padding-left: 34px;">RSI < 30（超卖）→ 权重 <span class="highlight">1.0</span>（重仓）</div>
+      <div class="step" style="padding-left: 34px;">RSI 30-50（正常）→ 权重 <span class="highlight">0.7</span></div>
+      <div class="step" style="padding-left: 34px;">RSI 50-70（偏高）→ 权重 <span class="warn">0.3</span></div>
+      <div class="step" style="padding-left: 34px;">RSI > 70（超买）→ 权重 <span class="warn">0</span>（排除）</div>
+      <div class="step"><span class="num">3</span> 归一化到 95%（保留 5% 现金）</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>超卖资产的反弹收益（行为金融学的过度反应）</li>
+          <li>与动量策略天然对冲，组合后降低整体波动</li>
+          <li>震荡市中表现优异</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>强趋势中"接飞刀"：RSI 20 的资产可能继续跌</li>
+          <li>趋势市中可能严重跑输动量策略</li>
+          <li>RSI 是单一指标，容易被噪音干扰</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 5: 风险配置策略 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch5">
+  <h2 class="chapter-title">第五章 风险配置策略</h2>
+  <p class="chapter-subtitle">"不预测，只分配" — 通过数学优化风险分配来获取收益</p>
+
+  <p>风险配置策略不预测市场方向，而是通过优化资产之间的风险分配来获取收益。核心思想：<strong>低波动、低相关性的资产长期跑赢</strong>。</p>
+
+  <!-- 策略 6: 风险平价 -->
+  <div class="strat-card" id="s6">
+    <div class="strat-header">
+      <span class="badge badge-risk">风险配置</span>
+      <h3>风险平价策略</h3>
+    </div>
+    <div class="strat-desc">仓位与波动率成反比。波动率低的资产多配，波动率高的资产少配。最简单的风险配置策略。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 计算每个资产的 20 日年化波动率</div>
+      <div class="step"><span class="num">2</span> 过滤波动率 < 0.5% 的资产（可能是停牌或数据异常）</div>
+      <div class="step"><span class="num">3</span> 计算波动率倒数: <span class="highlight">inv_vol = 1 / volatility</span></div>
+      <div class="step"><span class="num">4</span> 归一化: weight_i = inv_vol_i / sum(inv_vol) × 0.95</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>低波资产长期跑赢高波资产（低波异象）</li>
+          <li>组合波动率显著低于等权组合</li>
+          <li>无需预测，纯数学驱动</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>牛市中严重跑输（高波资产涨更多）</li>
+          <li>只看波动率，不看相关性</li>
+          <li>波动率是向后看的，可能滞后</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 7: 低相关性 -->
+  <div class="strat-card" id="s7">
+    <div class="strat-header">
+      <span class="badge badge-risk">风险配置</span>
+      <h3>低相关性组合策略</h3>
+    </div>
+    <div class="strat-desc">从相关性矩阵出发，构建最大化分散化的组合。与所有其他资产相关性低的资产获得更高权重。ERC（等风险贡献）思想的简化版。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 用 60 日滚动窗口计算<span class="highlight">相关性矩阵</span></div>
+      <div class="step"><span class="num">2</span> 对每个资产，计算与其他所有资产的平均相关性: avg_corr_i</div>
+      <div class="step"><span class="num">3</span> 转换为权重: <span class="highlight">inv_corr = max(0.01, 1 - avg_corr)</span></div>
+      <div class="step"><span class="num">4</span> 归一化到 95%</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>分散化降低组合波动</li>
+          <li>低相关性资产在危机中提供缓冲</li>
+          <li>动态适应市场相关性结构变化</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>危机中所有资产相关性趋向 1（分散化失效）</li>
+          <li>相关性矩阵不稳定，60 日窗口可能太短</li>
+          <li>不看收益，只看相关性，可能配到"正确但不赚钱"的资产</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 8: 尾部风险平价 -->
+  <div class="strat-card" id="s8">
+    <div class="strat-header">
+      <span class="badge badge-risk">风险配置</span>
+      <h3>尾部风险平价策略</h3>
+    </div>
+    <div class="strat-desc">CVaR + 动量联合优化。选择"每单位尾部风险获得最高动量收益"的资产。公式：得分 = momentum / CVaR。同时叠加 SPY 绝对动量过滤和波动率风险控制。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> <span class="warn">宏观过滤</span>: SPY 12 个月回报 ≤ 0 → 总仓位降至 30%</div>
+      <div class="step"><span class="num">2</span> <span class="warn">波动率控制</span>: SPY 20 日 vol > 1.5× 中位数 → 进一步减仓</div>
+      <div class="step"><span class="num">3</span> 对每个资产计算 CVaR(5%) 和动量得分</div>
+      <div class="step"><span class="num">4</span> 过滤动量 < 40 的资产</div>
+      <div class="step"><span class="num">5</span> <span class="highlight">得分 = 动量 / CVaR</span>（每单位尾部风险的收益）</div>
+      <div class="step"><span class="num">6</span> 按得分比例分配</div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>CVaR 比波动率更关注尾部风险</li>
+          <li>动量/CVaR 比率选择"收益好且尾部安全"的资产</li>
+          <li>宏观过滤在熊市中大幅降低暴露</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>CVaR 计算需要较长历史（252 天），新资产无法参与</li>
+          <li>尾部风险和动量可能同时为负（最差资产）</li>
+          <li>宏观过滤可能在 V 型反弹中错过机会</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 9: 回撤约束优化 -->
+  <div class="strat-card" id="s9">
+    <div class="strat-header">
+      <span class="badge badge-risk">风险配置</span>
+      <h3>回撤约束优化策略</h3>
+    </div>
+    <div class="strat-desc">动量 + 波动率 + 双层回撤约束。资产级：剔除历史最大回撤超 -40% 的"脆弱"资产。组合级：用 SPY 回撤阈值控制总仓位。</div>
+
+    <h4>核心逻辑</h4>
+    <div class="flow">
+      <div class="step"><span class="num">1</span> 动量筛选：得分 ≥ 50 的前 8 名候选</div>
+      <div class="step"><span class="num">2</span> <span class="warn">资产级约束</span>: 剔除历史最大回撤 > -40% 的资产，保留前 4</div>
+      <div class="step"><span class="num">3</span> 波动率倒数分配基础权重</div>
+      <div class="step"><span class="num">4</span> <span class="warn">组合级约束</span>: SPY 回撤 → 仓位映射:</div>
+      <div class="step" style="padding-left: 34px;">DD > -8%: <span class="highlight">100%</span></div>
+      <div class="step" style="padding-left: 34px;">DD -8% ~ -12%: <span class="warn">60%</span></div>
+      <div class="step" style="padding-left: 34px;">DD -12% ~ -16%: <span class="warn">30%</span></div>
+      <div class="step" style="padding-left: 34px;">DD < -16%: <span class="warn">0%</span></div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box good">
+        <h5>超额收益来源</h5>
+        <ul>
+          <li>双层约束：选股时剔除脆弱资产 + 持仓时动态减仓</li>
+          <li>资产级约束基于历史最大回撤，更稳健</li>
+          <li>组合级阈比回撤控制策略更宽松（-8% vs -5%）</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>失效场景</h5>
+        <ul>
+          <li>历史最大回撤不代表未来（新黑天鹅）</li>
+          <li>双层约束可能在极端市场中同时触发，仓位骤降</li>
+          <li>SPY 回撤阈值是静态的</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 6: 反脆弱策略 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch6">
+  <h2 class="chapter-title">第六章 反脆弱策略</h2>
+  <p class="chapter-subtitle">"从混乱中受益" — 用期权构建凸性收益结构</p>
+
+  <h3>理论基础：Taleb 的三态模型</h3>
+  <p>Nassim Taleb 在《反脆弱》中将事物分为三种状态：</p>
+
+  <div class="cat-grid">
+    <div class="cat-card" style="border-color: var(--red);">
+      <h4 style="color: var(--red);">脆弱 Fragile</h4>
+      <div class="desc">受冲击时受损。高杠杆、集中持仓、依赖预测。例：满仓单票。</div>
+    </div>
+    <div class="cat-card" style="border-color: var(--yellow);">
+      <h4 style="color: var(--yellow);">稳健 Robust</h4>
+      <div class="desc">受冲击时不受影响。分散化、低杠杆。例：60/40 股债组合。</div>
+    </div>
+    <div class="cat-card" style="border-color: var(--green);">
+      <h4 style="color: var(--green);">反脆弱 Antifragile</h4>
+      <div class="desc">受冲击时反而受益。凸性收益结构。例：持有 OTM put 期权。</div>
+    </div>
+  </div>
+
+  <h3>凸性收益结构</h3>
+  <p>反脆弱策略的核心是构建<strong>凸性收益结构</strong>：</p>
+  <div class="callout success">
+    <strong>凸性 = 损失有限，收益无限</strong><br>
+    花一小笔钱买保险（已知的最大损失），换取在暴跌时获得远超保费的赔付。<br><br>
+    本项目实现：每月支付 ~0.5% 的保费（BS 公允价值），当 SPY 月跌超过 OTM 阈值时，获得非线性赔付——跌幅越大，赔付加速增长。
+  </div>
+
+  <h3>Black-Scholes 定价实现</h3>
+  <p>每个再平衡周期，引擎执行以下步骤：</p>
+  <div class="flow">
+    <div class="step"><span class="num">1</span> 用 BS 公式计算 OTM put 的<span class="highlight">公允价值</span>（保险费）</div>
+    <div class="step"><span class="num">2</span> 从组合价值中<span class="warn">扣除保费</span></div>
+    <div class="step"><span class="num">3</span> 计算 SPY 本周期实际跌幅</div>
+    <div class="step"><span class="num">4</span> 如果跌幅 > OTM 阈值 → 计算<span class="highlight">内在价值赔付</span></div>
+    <div class="step"><span class="num">5</span> 赔付加回组合价值</div>
+  </div>
+
+  <h3>赔付函数详解</h3>
+  <div class="formula" style="background: var(--surface2); border-radius: 8px; padding: 16px; margin: 12px 0;">
+    如果 SPY 跌幅 ≤ OTM 阈值：<br>
+    &nbsp;&nbsp;赔付 = 0（保费损失）<br><br>
+    如果 SPY 跌幅 > OTM 阈值：<br>
+    &nbsp;&nbsp;K = 100 × (1 - OTM%)  &nbsp; // 行权价<br>
+    &nbsp;&nbsp;S1 = 100 × (1 - 跌幅)  &nbsp; // 到期价格<br>
+    &nbsp;&nbsp;赔付 = max(K - S1, 0) / 100 - 保费<br><br>
+    示例（5% OTM, SPY 跌 8%）：<br>
+    &nbsp;&nbsp;K = 95, S1 = 92<br>
+    &nbsp;&nbsp;内在价值 = 95 - 92 = 3<br>
+    &nbsp;&nbsp;净赔付 = 3% - 0.5%（保费）= 2.5%
+  </div>
+
+  <!-- 策略 10: 反脆弱标准版 -->
+  <div class="strat-card" id="s10">
+    <div class="strat-header">
+      <span class="badge badge-anti">反脆弱</span>
+      <h3>反脆弱标准版</h3>
+    </div>
+    <div class="strat-desc">双动量主组合 + SPY 5% OTM 月频 put 对冲。每月支付 ~0.5% 保费，SPY 月跌超 5% 时获得凸性赔付。</div>
+
+    <div class="metrics">
+      <div class="metric"><div class="value positive">+5.23%</div><div class="label">年化收益</div></div>
+      <div class="metric"><div class="value negative">-25.18%</div><div class="label">最大回撤</div></div>
+      <div class="metric"><div class="value">0.14</div><div class="label">夏普比率</div></div>
+      <div class="metric"><div class="value">15.70%</div><div class="label">年化波动率</div></div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box neutral">
+        <h5>关键参数</h5>
+        <ul>
+          <li>OTM 阈值: 5%</li>
+          <li>结算频率: 月频</li>
+          <li>波动率: 20%</li>
+          <li>定价模式: BS 公允价值</li>
+        </ul>
+      </div>
+      <div class="info-box good">
+        <h5>适用场景</h5>
+        <ul>
+          <li>长期持有，愿意为尾部保护支付保费</li>
+          <li>SPY 月跌 5%+ 的频率约为 15-20%</li>
+          <li>保费成本 ~6%/年，对冲收益在暴跌中体现</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 11: 反脆弱激进版 -->
+  <div class="strat-card" id="s11">
+    <div class="strat-header">
+      <span class="badge badge-anti">反脆弱</span>
+      <h3>反脆弱激进版</h3>
+    </div>
+    <div class="strat-desc">更低的 OTM 阈值（3%）+ 更高的保费（~1%/月）。SPY 月跌 3% 比 5% 常见得多，触发更频繁。</div>
+
+    <div class="metrics">
+      <div class="metric"><div class="value positive">+1.25%</div><div class="label">年化收益</div></div>
+      <div class="metric"><div class="value negative">-26.80%</div><div class="label">最大回撤</div></div>
+      <div class="metric"><div class="value negative">-0.11</div><div class="label">夏普比率</div></div>
+      <div class="metric"><div class="value">15.70%</div><div class="label">年化波动率</div></div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box neutral">
+        <h5>关键参数</h5>
+        <ul>
+          <li>OTM 阈值: 3%（更浅）</li>
+          <li>结算频率: 月频</li>
+          <li>波动率: 20%</li>
+          <li>定价模式: BS 公允价值</li>
+        </ul>
+      </div>
+      <div class="info-box bad">
+        <h5>代价</h5>
+        <ul>
+          <li>保费成本 ~12%/年，大幅拖累收益</li>
+          <li>3% OTM 的赔付倍数低于 5% OTM</li>
+          <li>适合极度厌恶尾部风险的投资者</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 12: 反脆弱周频版 -->
+  <div class="strat-card" id="s12">
+    <div class="strat-header">
+      <span class="badge badge-anti">反脆弱</span>
+      <h3>反脆弱周频版</h3>
+    </div>
+    <div class="strat-desc">周频结算的尾部对冲。SPY 周度标准差 ~1.5%，3% OTM ≈ 2 个标准差。更细粒度的保护。</div>
+
+    <div class="metrics">
+      <div class="metric"><div class="value positive">+5.07%</div><div class="label">年化收益</div></div>
+      <div class="metric"><div class="value negative">-23.06%</div><div class="label">最大回撤</div></div>
+      <div class="metric"><div class="value">0.14</div><div class="label">夏普比率</div></div>
+      <div class="metric"><div class="value">14.94%</div><div class="label">年化波动率</div></div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-box neutral">
+        <h5>关键参数</h5>
+        <ul>
+          <li>OTM 阈值: 3%</li>
+          <li>结算频率: 周频（T=1/52）</li>
+          <li>波动率: 20%</li>
+          <li>定价模式: BS 公允价值</li>
+        </ul>
+      </div>
+      <div class="info-box good">
+        <h5>设计思路</h5>
+        <ul>
+          <li>周频可以捕捉月频遗漏的周内暴跌</li>
+          <li>3% OTM 在周度尺度上约 2σ，触发概率合理</li>
+          <li>保费成本 ~9.4%/年</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 策略 13: 反脆弱日频版 -->
+  <div class="strat-card" id="s13">
+    <div class="strat-header">
+      <span class="badge badge-anti">反脆弱</span>
+      <h3>反脆弱日频版</h3>
+    </div>
+    <div class="strat-desc">日频结算的尾部对冲。2% OTM，vol=30%（短期期权 IV 更高）。最细粒度的保护，但保费成本最高。</div>
+
+    <div class="metrics">
+      <div class="metric"><div class="value negative">-2.19%</div><div class="label">年化收益</div></div>
+      <div class="metric"><div class="value negative">-57.51%</div><div class="label">最大回撤</div></div>
+      <div class="metric"><div class="value negative">-0.34</div><div class="label">夏普比率</div></div>
+      <div class="metric"><div class="value">15.31%</div><div class="label">年化波动率</div></div>
+    </div>
+
+    <div class="callout warn">
+      <strong>日频策略是"保险过贵"的典型案例</strong><br>
+      BS 公允价值下日频保费 ~34%/年。即使 SPY 日跌 2%+ 的频率不低，赔付也难以覆盖如此高昂的保费。这说明：<strong>保险的频率和深度需要平衡</strong>——买太频繁的保险，成本会吃掉所有收益。
+    </div>
+  </div>
+
+  <h3>反脆弱策略对比总结</h3>
+  <table>
+    <tr>
+      <th>变体</th><th>OTM</th><th>频率</th><th>年化保费</th><th>年化收益</th><th>夏普</th><th>结论</th>
+    </tr>
+    <tr>
+      <td>标准版</td><td>5%</td><td>月</td><td>~6%</td><td class="positive">+5.23%</td><td>0.14</td><td>平衡之选</td>
+    </tr>
+    <tr>
+      <td>激进版</td><td>3%</td><td>月</td><td>~12%</td><td class="positive">+1.25%</td><td>-0.11</td><td>保费过贵</td>
+    </tr>
+    <tr>
+      <td>周频版</td><td>3%</td><td>周</td><td>~9.4%</td><td class="positive">+5.07%</td><td>0.14</td><td>与标准版接近</td>
+    </tr>
+    <tr>
+      <td>日频版</td><td>2%</td><td>日</td><td>~34%</td><td class="negative">-2.19%</td><td>-0.34</td><td>保险过贵</td>
+    </tr>
+    <tr style="background: var(--surface2);">
+      <td><strong>双动量基线</strong></td><td>—</td><td>—</td><td>0%</td><td class="positive"><strong>+8.42%</strong></td><td><strong>0.35</strong></td><td>无对冲基准</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <strong>核心结论：买保险有成本</strong><br>
+    所有反脆弱策略都低于纯双动量基线。这不是 bug，而是真实的代价——你用 ~3-6% 的年化收益换取尾部保护。是否值得取决于你对"保本"的重视程度。
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 7: 策略组合与市场体制 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch7">
+  <h2 class="chapter-title">第七章 策略组合与市场体制</h2>
+  <p class="chapter-subtitle">没有万能策略。不同市场环境需要不同的策略。</p>
+
+  <h3>市场体制识别</h3>
+  <p>Market Pulse 通过 SPY、TLT、CL 的动量得分和 SPY 回撤来识别五种市场体制：</p>
+
+  <div class="regime-grid">
+    <div class="regime-card" style="border-top: 3px solid var(--green);">
+      <h5 style="color: var(--green);">Risk-On 风险偏好</h5>
+      <div class="alloc">
+        <strong>信号</strong>: SPY 动量 > TLT 动量 + 15 且 SPY > 60<br>
+        <strong>含义</strong>: 市场乐观，资金流向风险资产<br>
+        <strong>配置</strong>: 60% 核心 / 35% 卫星 / 5% 现金<br>
+        <strong>策略</strong>: 趋势动量、双动量
+      </div>
+    </div>
+    <div class="regime-card" style="border-top: 3px solid var(--blue);">
+      <h5 style="color: var(--blue);">Risk-Off 避险</h5>
+      <div class="alloc">
+        <strong>信号</strong>: TLT 动量 > SPY 动量 + 15 且 TLT > 55<br>
+        <strong>含义</strong>: 资金从股市流向债市<br>
+        <strong>配置</strong>: 60% 核心(TLT 70%) / 20% 卫星 / 20% 现金<br>
+        <strong>策略</strong>: 风险平价、低相关性组合
+      </div>
+    </div>
+    <div class="regime-card" style="border-top: 3px solid var(--orange);">
+      <h5 style="color: var(--orange);">Stagflation 滞胀担忧</h5>
+      <div class="alloc">
+        <strong>信号</strong>: CL 动量 > 70 且 SPY < 50<br>
+        <strong>含义</strong>: 油价飙升 + 股市疲软<br>
+        <strong>配置</strong>: 40% 核心 / 20% 卫星 / 40% 现金<br>
+        <strong>策略</strong>: 反脆弱、尾部风险平价
+      </div>
+    </div>
+    <div class="regime-card" style="border-top: 3px solid var(--red);">
+      <h5 style="color: var(--red);">Crisis 危机</h5>
+      <div class="alloc">
+        <strong>信号</strong>: SPY 回撤 < -15%<br>
+        <strong>含义</strong>: 深度下跌，避险为主<br>
+        <strong>配置</strong>: 40% 核心 / 10% 卫星 / 50% 现金<br>
+        <strong>策略</strong>: 回撤控制、反脆弱（此时赔付生效）
+      </div>
+    </div>
+    <div class="regime-card" style="border-top: 3px solid var(--yellow);">
+      <h5 style="color: var(--yellow);">Range-bound 震荡</h5>
+      <div class="alloc">
+        <strong>信号</strong>: SPY 和 TLT 动量接近，都在 40-60<br>
+        <strong>含义</strong>: 方向不明，无明显趋势<br>
+        <strong>配置</strong>: 50% 核心 / 20% 卫星 / 30% 现金<br>
+        <strong>策略</strong>: 均值回归、风险平价
+      </div>
+    </div>
+  </div>
+
+  <h3>策略选择矩阵</h3>
+  <table>
+    <tr>
+      <th>市场环境</th><th>首选策略</th><th>次选策略</th><th>避免策略</th>
+    </tr>
+    <tr>
+      <td>强趋势牛市</td><td>趋势跟踪、双动量</td><td>动量+波动率</td><td>均值回归</td>
+    </tr>
+    <tr>
+      <td>温和上涨</td><td>双动量、尾部风险平价</td><td>回撤约束优化</td><td>反脆弱（保费拖累）</td>
+    </tr>
+    <tr>
+      <td>震荡市</td><td>均值回归、风险平价</td><td>低相关性组合</td><td>趋势跟踪</td>
+    </tr>
+    <tr>
+      <td>缓慢下跌</td><td>回撤控制、风险平价</td><td>低相关性组合</td><td>趋势跟踪（假信号多）</td>
+    </tr>
+    <tr>
+      <td>暴跌/危机</td><td>反脆弱、回撤控制</td><td>尾部风险平价</td><td>均值回归（接飞刀）</td>
+    </tr>
+    <tr>
+      <td>滞胀</td><td>反脆弱、风险平价</td><td>回撤约束优化</td><td>趋势动量（股市疲软）</td>
+    </tr>
+  </table>
+
+  <h3>核心-卫星资产配置框架</h3>
+  <p>Market Puls 的资产配置采用<strong>核心-卫星</strong>框架：</p>
+  <div class="info-grid">
+    <div class="info-box good">
+      <h5>核心资产（长期持有）</h5>
+      <ul>
+        <li>SPY — 美国大盘股</li>
+        <li>TLT — 长期国债</li>
+        <li>根据市场体制动态调整 SPY:TLT 比例</li>
+      </ul>
+    </div>
+    <div class="info-box neutral">
+      <h5>卫星资产（动态轮动）</h5>
+      <ul>
+        <li>QQQ、板块 ETF、A 股指数、全球指数</li>
+        <li>根据动量得分择时配置</li>
+        <li>动量 ≥ 70 买入，≤ 30 卖出</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- CHAPTER 8: 从回测到实盘 -->
+<!-- ============================================================ -->
+<div class="chapter" id="ch8">
+  <h2 class="chapter-title">第八章 从回测到实盘</h2>
+  <p class="chapter-subtitle">回测告诉你"过去会怎样"，但不保证"未来会怎样"。</p>
+
+  <h3>回测的陷阱</h3>
+  <div class="info-grid">
+    <div class="info-box bad">
+      <h5>常见陷阱</h5>
+      <ul>
+        <li><strong>过拟合</strong>：参数调到历史数据完美匹配，但未来失效</li>
+        <li><strong>前视偏差</strong>：用了未来才知道的信息（如用收盘价做当日决策）</li>
+        <li><strong>幸存者偏差</strong>：只回测现在还存在的资产</li>
+        <li><strong>交易成本低估</strong>：忽略滑点、冲击成本、税费</li>
+        <li><strong>数据窥探</strong>：反复在同一数据集上调参，直到"好看"</li>
+      </ul>
+    </div>
+    <div class="info-box good">
+      <h5>本项目的设计选择</h5>
+      <ul>
+        <li><strong>月度再平衡</strong>：减少交易频率，降低过拟合风险</li>
+        <li><strong>按日计算收益</strong>：避免只看月末的粗糙估计</li>
+        <li><strong>换手成本</strong>：按换手量 × 佣金率计算</li>
+        <li><strong>预热期</strong>：跳过前 252 个交易日，确保指标有足够数据</li>
+        <li><strong>数据诊断</strong>：页面显示每个资产的数据覆盖范围</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>交易成本的影响</h3>
+  <p>本项目的佣金模型：<code>成本 = 换手量 × 佣金率（0.1%）</code></p>
+  <div class="callout">
+    <strong>换手量 = Σ|新权重 - 旧权重|</strong><br>
+    例：从 60% SPY / 40% TLT 变为 50% SPY / 50% TLT<br>
+    换手量 = |50-60| + |50-40| = 20 个百分点<br>
+    成本 = 0.2 × 0.1% = 0.02% 的组合价值
+  </div>
+
+  <h3>从回测到实盘的差距</h3>
+  <table>
+    <tr><th>因素</th><th>回测</th><th>实盘</th></tr>
+    <tr><td>交易成本</td><td>简化模型（0.1% 固定佣金）</td><td>滑点 + 冲击成本 + 税费</td></tr>
+    <tr><td>执行价格</td><td>收盘价</td><td>可能买不到/卖不到收盘价</td></tr>
+    <tr><td>数据质量</td><td>历史数据可能有修正</td><td>实时数据可能有延迟</td></tr>
+    <tr><td>心理因素</td><td>无</td><td>恐慌、贪婪、过度交易</td></tr>
+    <tr><td>市场影响</td><td>假设不影响市场</td><td>大资金会推动价格</td></tr>
+  </table>
+
+  <h3>给策略研究员的建议</h3>
+  <div class="callout success">
+    <ol style="padding-left: 20px;">
+      <li><strong>先理解策略在赌什么</strong>，再看回测数字。回测好看不代表策略好。</li>
+      <li><strong>关注失效场景</strong>比关注收益更重要。知道什么时候亏钱，比知道什么时候赚钱更有价值。</li>
+      <li><strong>简单策略优于复杂策略</strong>。双动量（5 行核心逻辑）比很多复杂机器学习模型更 robust。</li>
+      <li><strong>组合多种策略</strong>比押注单一策略更安全。趋势 + 均值回归 + 风险配置的组合，比任何单一策略都稳。</li>
+      <li><strong>回测是必要条件，不是充分条件</strong>。通过回测的策略不一定好，但没通过回测的策略一定不好。</li>
+      <li><strong>保持怀疑</strong>。夏普 > 3 的策略大概率是过拟合。年化 50% 的策略大概率是模型错误。</li>
+    </ol>
+  </div>
+</div>
+
+<!-- Footer -->
+<div style="text-align: center; padding: 60px 20px 40px; color: var(--text2); font-size: 0.85rem;">
+  <p>策略研究学习手册 — Market Pulse</p>
+  <p style="margin-top: 4px;">基于项目实际代码和回测数据编写</p>
+  <p style="margin-top: 4px;">源码: <code style="color: var(--cyan); background: var(--surface2); padding: 2px 8px; border-radius: 4px;">core/strategy/strategies.py</code></p>
+</div>
+
+</div><!-- .main -->
+</div><!-- .layout -->
+
+</body>
+</html>
