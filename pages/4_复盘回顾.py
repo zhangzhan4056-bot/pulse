@@ -33,12 +33,30 @@ from core.strategy.strategies import (
     MeanReversionStrategy,
     MinCorrelationStrategy,
     DualMomentumStrategy,
+    DualMomentum6MStrategy,
+    DualMomentum3MStrategy,
     MomentumVolFilterStrategy,
     DrawdownControlStrategy,
     AntifragileStrategy,
+    AntifragileAggressiveStrategy,
+    AntifragileWeeklyStrategy,
+    AntifragileDailyStrategy,
     TailRiskParityStrategy,
     DrawdownConstraintStrategy,
+    RegimeSwitchingStrategy,
     STRATEGY_CATEGORIES,
+)
+from core.strategy.indicators import detect_market_regime, calc_regime_score
+from core.strategy.regime_config import (
+    REGIME_COLORS,
+    REGIME_RECOMMENDATIONS,
+)
+from app.components.tooltips import (
+    COMPOSITE_SCORE, MARKET_REGIME, VOL_REGIME, HIT_RATE, REGRET_RATE,
+    PROFIT_LOSS_RATIO, STRATEGY_HIT_RATE, FORWARD_RETURN,
+    ANNUAL_RETURN, TOTAL_RETURN, MAX_DRAWDOWN, SHARPE_RATIO,
+    VOLATILITY, WIN_RATE, TREND_SCORE, REVERSION_SCORE, RISK_SCORE,
+    tip_icon,
 )
 
 
@@ -173,7 +191,7 @@ def _opp_correctness(opp_type: str, forward_return: float,
 def backtest_opportunities(
     dm: DataManager,
     horizon_days: int = 30,
-    lookback_days: int = 365,
+    lookback_days: int = 730,
 ) -> List[Dict]:
     """基于历史数据模拟 P2 扫描，评估机会分类准确性
 
@@ -312,18 +330,24 @@ def _get_all_strategies():
         MeanReversionStrategy(),
         MinCorrelationStrategy(),
         DualMomentumStrategy(),
+        DualMomentum6MStrategy(),
+        DualMomentum3MStrategy(),
         MomentumVolFilterStrategy(),
         DrawdownControlStrategy(),
         AntifragileStrategy(),
+        AntifragileAggressiveStrategy(),
+        AntifragileWeeklyStrategy(),
+        AntifragileDailyStrategy(),
         TailRiskParityStrategy(),
         DrawdownConstraintStrategy(),
+        RegimeSwitchingStrategy(),
     ]
 
 
 def backtest_strategy_rankings(
     dm: DataManager,
     horizon_days: int = 30,
-    lookback_days: int = 365,
+    lookback_days: int = 730,
     sample_interval: int = 30,
 ) -> Dict:
     """运行全部策略回测 + 在历史采样点评估排名
@@ -394,8 +418,26 @@ def backtest_strategy_rankings(
     spy_equity = spy_equity / spy_equity.iloc[0]  # 归一化
 
     # 对每个采样点评估
+    # 预取 SPY/TLT/CL 数据用于体制检测
+    spy_raw = all_data.get("SPY", pd.DataFrame())
+    tlt_raw = all_data.get("TLT", pd.DataFrame())
+    cl_raw = all_data.get("CL", pd.DataFrame())
+
     sample_results = []
     for sample_date in sample_dates:
+        # 计算该采样点的市场体制
+        regime_name = "中性"
+        composite = 50.0
+        spy_close_slice = spy_raw[spy_raw["date"] <= sample_date]["close"] if not spy_raw.empty else pd.Series()
+        if len(spy_close_slice) >= 60:
+            rs = calc_regime_score(spy_close_slice)
+            composite = rs.get("composite", 50)
+            tlt_close_slice = tlt_raw[tlt_raw["date"] <= sample_date]["close"] if not tlt_raw.empty else pd.Series()
+            cl_close_slice = cl_raw[cl_raw["date"] <= sample_date]["close"] if not cl_raw.empty else pd.Series()
+            if len(tlt_close_slice) >= 60 and len(cl_close_slice) >= 60:
+                regime_info = detect_market_regime(spy_close_slice, tlt_close_slice, cl_close_slice)
+                regime_name = regime_info.get("regime", "中性")
+
         rankings = []
         for r in results_list:
             equity = r.equity_curve
@@ -437,6 +479,8 @@ def backtest_strategy_rankings(
 
         sample_results.append({
             "date": sample_date,
+            "regime": regime_name,
+            "composite": composite,
             "recommended": recommended,
             "rankings": rankings,
         })
@@ -666,15 +710,26 @@ def render_opportunity_review(results: List[Dict]):
             hit = data["correct"] / data["total"] * 100
             avg_ret = sum(data["returns"]) / len(data["returns"])
             regret_rate = data["regret"] / data["total"] * 100 if data["total"] > 0 else 0
+            winning = [r for r in data["returns"] if r > 0]
+            losing = [r for r in data["returns"] if r < 0]
+            avg_win = sum(winning) / len(winning) if winning else 0
+            avg_lose = sum(losing) / len(losing) if losing else 0
+            pnl_ratio = avg_win / abs(avg_lose) if avg_lose != 0 else float('inf')
             rows.append({
                 "类型": cfg["label"],
                 "信号数": data["total"],
                 "命中率": f"{hit:.0f}%",
                 "平均收益": f"+{avg_ret:.1f}%" if avg_ret > 0 else f"{avg_ret:.1f}%",
                 "后悔率": f"{regret_rate:.0f}%",
+                "盈亏比": f"{pnl_ratio:.2f}" if pnl_ratio != float('inf') else "∞",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                         column_config={
+                             "命中率": st.column_config.TextColumn(help=HIT_RATE),
+                             "后悔率": st.column_config.TextColumn(help=REGRET_RATE),
+                             "盈亏比": st.column_config.TextColumn(help=PROFIT_LOSS_RATIO),
+                         })
 
     with col_chart:
         st.markdown("**命中率对比**")
@@ -705,6 +760,105 @@ def render_opportunity_review(results: List[Dict]):
                 showlegend=False,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # ---- 按市场体制分析 ----
+    st.markdown("**  按市场体制分析**")
+    st.caption("不同市场体制下各机会类型的命中率差异，用于判断策略适用环境")
+
+    by_regime = {}  # {opp_type: {regime: {correct, total, returns}}}
+    for r in results:
+        regime = r.get("regime", "中性")
+        for s in r["scores"]:
+            opp = s["opportunity"]
+            if opp == OPPORTUNITY_NEUTRAL:
+                continue
+            if opp not in by_regime:
+                by_regime[opp] = {}
+            if regime not in by_regime[opp]:
+                by_regime[opp][regime] = {"correct": 0, "total": 0, "returns": []}
+            by_regime[opp][regime]["total"] += 1
+            if s["forward_return"] is not None:
+                by_regime[opp][regime]["returns"].append(s["forward_return"])
+                if s["correct"]:
+                    by_regime[opp][regime]["correct"] += 1
+
+    all_regimes = ["风险偏好", "避险", "危机", "滞胀担忧", "震荡", "中性"]
+    # 只显示有数据的体制
+    regime_order = [r for r in all_regimes if any(
+        by_regime.get(opp, {}).get(r, {}).get("total", 0) > 0
+        for opp in by_regime
+    )]
+    if not regime_order:
+        st.info("暂无体制数据")
+        return
+
+    regime_chart, regime_table = st.columns([1, 1])
+
+    with regime_chart:
+        fig = go.Figure()
+        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
+                         OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID]:
+            cfg = OPP_CONFIG[opp_type]
+            hit_rates = []
+            for reg in regime_order:
+                d = by_regime.get(opp_type, {}).get(reg)
+                if d and d["total"] > 0:
+                    hit_rates.append(d["correct"] / d["total"] * 100)
+                else:
+                    hit_rates.append(None)
+            fig.add_trace(go.Bar(
+                x=regime_order, y=hit_rates, name=cfg["label"],
+                marker_color=cfg["color"], opacity=0.8,
+            ))
+        fig.add_hline(y=50, line_dash="dash", line_color="#999", line_width=1)
+        fig.update_layout(
+            barmode="group", yaxis_title="命中率 (%)",
+            yaxis=dict(range=[0, 100]), height=350,
+            template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with regime_table:
+        st.markdown("**命中率明细**")
+        table_rows = []
+        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
+                         OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID]:
+            cfg = OPP_CONFIG[opp_type]
+            row = {"类型": cfg["label"]}
+            for reg in regime_order:
+                d = by_regime.get(opp_type, {}).get(reg)
+                if d and d["total"] > 0:
+                    hit = d["correct"] / d["total"] * 100
+                    row[reg] = f"{hit:.0f}% ({d['total']}条)"
+                else:
+                    row[reg] = "—"
+            table_rows.append(row)
+        if table_rows:
+            st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+    # 自动高亮最显著的体制差异
+    insights = []
+    for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION]:
+        cfg = OPP_CONFIG[opp_type]
+        regime_hits = {}
+        for reg in regime_order:
+            d = by_regime.get(opp_type, {}).get(reg)
+            if d and d["total"] >= 3:
+                regime_hits[reg] = d["correct"] / d["total"] * 100
+        if len(regime_hits) >= 2:
+            best_reg = max(regime_hits, key=regime_hits.get)
+            worst_reg = min(regime_hits, key=regime_hits.get)
+            spread = regime_hits[best_reg] - regime_hits[worst_reg]
+            if spread > 15:
+                insights.append(
+                    f"{cfg['label']}在{best_reg}体制下命中率最高({regime_hits[best_reg]:.0f}%)，"
+                    f"在{worst_reg}体制下最低({regime_hits[worst_reg]:.0f}%)，差距{spread:.0f}pp"
+                )
+    if insights:
+        st.info(" · ".join(insights))
 
     st.divider()
 
@@ -858,8 +1012,8 @@ def render_opportunity_review(results: List[Dict]):
 
     # ---- 指标说明 ----
     with st.expander("  指标含义", expanded=False):
-        st.markdown("""
-**命中率** — 各类型信号中，方向判断正确的比例。越高越好。
+        st.markdown(f"""
+**命中率** — {HIT_RATE}
 
 | 机会类型 | 正确判定 | 含义 |
 |---------|---------|------|
@@ -868,7 +1022,11 @@ def render_opportunity_review(results: List[Dict]):
 | 均值回归 | 前向收益 > 0 | 说"超卖会反弹"，后来真的弹了 |
 | 建议规避 | 前向收益 < 基准 | 说"别碰"，后来跑输了大盘 |
 
-**后悔率** — 买入/关注信号中，亏损超过 5% 的比例。越低越好。反映系统的资本保护能力。
+**后悔率** — {REGRET_RATE}
+
+**盈亏比** — {PROFIT_LOSS_RATIO}
+
+**前向收益** — {FORWARD_RETURN}
         """)
 
 
@@ -928,7 +1086,15 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
     display_df["Sharpe"] = display_df["Sharpe"].apply(lambda x: f"{x:.2f}")
     display_df["月胜率%"] = display_df["月胜率%"].apply(lambda x: f"{x:.0f}%")
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True,
+                 column_config={
+                     "总收益%": st.column_config.TextColumn(help=TOTAL_RETURN),
+                     "年化%": st.column_config.TextColumn(help=ANNUAL_RETURN),
+                     "最大回撤%": st.column_config.TextColumn(help=MAX_DRAWDOWN),
+                     "Sharpe": st.column_config.TextColumn(help=SHARPE_RATIO),
+                     "波动率%": st.column_config.TextColumn(help=VOLATILITY),
+                     "月胜率%": st.column_config.TextColumn(help=WIN_RATE),
+                 })
 
     # 净值曲线对比
     fig = go.Figure()
@@ -1012,8 +1178,8 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
         hit_color = "#2e7d32" if hit_rate >= 60 else "#c62828" if hit_rate < 40 else "#f57c00"
         st.markdown(
             f'<div style="text-align:center;padding:0.8rem;background:#e3f2fd;'
-            f'border-radius:0.5rem;border-bottom:3px solid #42a5f5;">'
-            f'<div style="font-size:0.85rem;color:#1565c0;">推荐策略跑赢率</div>'
+            f'border-radius:0.5rem;border-bottom:3px solid #42a5f5;" title="{STRATEGY_HIT_RATE}">'
+            f'<div style="font-size:0.85rem;color:#1565c0;">推荐策略跑赢率 ⓘ</div>'
             f'<div style="font-size:2rem;font-weight:bold;color:{hit_color};">{hit_rate:.0f}%</div>'
             f'<div style="font-size:0.8rem;color:#666;">{total_beat}/{total_evaluated}</div>'
             f'</div>',
@@ -1071,6 +1237,7 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
             excess = (fwd - spy_fwd) if fwd is not None and spy_fwd is not None else None
             rows.append({
                 "日期": r["date"],
+                "体制": r.get("regime", "中性"),
                 "推荐策略": r["recommended"],
                 "Sharpe估计": top["sharpe_est"],
                 "策略收益": f"+{fwd:.1f}%" if fwd and fwd > 0 else f"{fwd:.1f}%" if fwd else "N/A",
@@ -1080,6 +1247,85 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
             })
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ============================================================
+    # 按体制分组分析
+    # ============================================================
+    st.markdown("**  按体制分组分析**")
+    st.caption("不同市场体制下推荐策略的跑赢率和超额收益")
+
+    by_regime = {}
+    for r in sample_results:
+        regime = r.get("regime", "中性")
+        if regime not in by_regime:
+            by_regime[regime] = {"recommended_counts": {}, "beat_count": 0, "total": 0, "excess_returns": []}
+
+        rec = r["recommended"]
+        by_regime[regime]["recommended_counts"][rec] = by_regime[regime]["recommended_counts"].get(rec, 0) + 1
+
+        top = r["rankings"][0] if r["rankings"] else None
+        if top and top["beat_spy"] is not None:
+            by_regime[regime]["total"] += 1
+            if top["beat_spy"]:
+                by_regime[regime]["beat_count"] += 1
+        if top and top["forward_return"] is not None and top["spy_forward_return"] is not None:
+            by_regime[regime]["excess_returns"].append(top["forward_return"] - top["spy_forward_return"])
+
+    if by_regime:
+        regime_rows = []
+        for regime, data in sorted(by_regime.items()):
+            beat_rate = data["beat_count"] / data["total"] * 100 if data["total"] > 0 else 0
+            avg_excess = sum(data["excess_returns"]) / len(data["excess_returns"]) if data["excess_returns"] else 0
+            top_strategy = max(data["recommended_counts"].items(), key=lambda x: x[1])[0] if data["recommended_counts"] else "N/A"
+            regime_rows.append({
+                "体制": regime,
+                "最常推荐": top_strategy,
+                "推荐次数": data["recommended_counts"].get(top_strategy, 0),
+                "跑赢率": f"{beat_rate:.0f}%",
+                "平均超额": f"{avg_excess:+.1f}%",
+                "样本数": data["total"],
+            })
+
+        regime_chart_col, regime_table_col = st.columns([1, 1])
+
+        with regime_chart_col:
+            fig = go.Figure(go.Bar(
+                x=[r["体制"] for r in regime_rows],
+                y=[float(r["跑赢率"].rstrip("%")) for r in regime_rows],
+                marker_color=[REGIME_COLORS.get(r["体制"], "#999") for r in regime_rows],
+                text=[f"{r['跑赢率']}<br>{r['最常推荐']}" for r in regime_rows],
+                textposition="outside",
+                textfont=dict(size=10),
+            ))
+            fig.add_hline(y=50, line_dash="dash", line_color="#999", line_width=1)
+            fig.update_layout(
+                yaxis_title="跑赢 SPY 率 (%)",
+                yaxis=dict(range=[0, 105]),
+                height=300,
+                template="plotly_white",
+                showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with regime_table_col:
+            st.dataframe(pd.DataFrame(regime_rows), use_container_width=True, hide_index=True,
+                         column_config={
+                             "跑赢率": st.column_config.TextColumn(help=STRATEGY_HIT_RATE),
+                             "平均超额": st.column_config.TextColumn(help="推荐策略相对 SPY 的平均超额收益"),
+                         })
+
+        # 高亮最佳/最差体制
+        if len(regime_rows) >= 2:
+            best = max(regime_rows, key=lambda r: float(r["跑赢率"].rstrip("%")))
+            worst = min(regime_rows, key=lambda r: float(r["跑赢率"].rstrip("%")))
+            st.info(
+                f"策略系统在**{best['体制']}**体制下表现最好（跑赢率 {best['跑赢率']}），"
+                f"在**{worst['体制']}**体制下表现最差（跑赢率 {worst['跑赢率']}）。"
+            )
+    else:
+        st.info("采样点不足，无法进行体制分组分析")
 
 
 def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[BacktestResult]) -> List[Dict]:
@@ -1227,7 +1473,6 @@ def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[Bac
 
 def render_market_recommendation(dm: DataManager):
     """基于当前市场体制推荐最适合的策略"""
-    from core.strategy.indicators import detect_market_regime, calc_regime_score, calc_momentum_score
 
     st.subheader("  当前市场策略推荐")
     st.caption("基于市场体制和近 1 年回测数据，推荐当前最适合的策略组合")
@@ -1260,87 +1505,18 @@ def render_market_recommendation(dm: DataManager):
     composite = rs.get("composite", 50)
     vol_regime = rs.get("vol_regime", "正常")
 
-    # 体制 → 策略推荐规则
-    # 每个体制推荐 3 个策略，优先不同类别以确保多样性
-    REGIME_RECOMMENDATIONS = {
-        "风险偏好": {
-            "label": "  风险偏好",
-            "color": "#2e7d32",
-            "bg": "#e8f5e9",
-            "advice": "趋势向上 + 股强于债，动量策略收割趋势收益",
-            "strategies": [
-                {"name": "双动量策略", "reason": "绝对动量过滤 + 相对动量选最强资产"},
-                {"name": "动量+波动率过滤", "reason": "动量选股 + 波动率控仓，稳步上涨"},
-                {"name": "趋势跟踪策略", "reason": "均线多头排列 + MACD 确认，顺势而为"},
-            ],
-        },
-        "避险": {
-            "label": " ️ 避险",
-            "color": "#1565c0",
-            "bg": "#e3f2fd",
-            "advice": "趋势向下，减少权益暴露，转向风险配置和对冲",
-            "strategies": [
-                {"name": "风险平价策略", "reason": "波动率反比配置，自动降仓高波资产"},
-                {"name": "低相关性组合策略", "reason": "最大分散化，降低单一资产风险"},
-                {"name": "回撤控制策略", "reason": "回撤风控层自动减仓，保本优先"},
-            ],
-        },
-        "危机": {
-            "label": "  危机",
-            "color": "#c62828",
-            "bg": "#ffebee",
-            "advice": "高波动 + 趋势崩塌，保护本金为第一优先",
-            "strategies": [
-                {"name": "反脆弱策略", "reason": "尾部对冲在暴跌时产生凸性收益"},
-                {"name": "回撤约束优化", "reason": "资产级+组合级双重回撤硬约束"},
-                {"name": "回撤控制策略", "reason": "跌破阈值自动减仓，严格风控"},
-            ],
-        },
-        "滞胀担忧": {
-            "label": "  滞胀担忧",
-            "color": "#e65100",
-            "bg": "#fff3e0",
-            "advice": "趋势不明 + 高波动，降低仓位等待明朗",
-            "strategies": [
-                {"name": "均值回归策略", "reason": "震荡市中 RSI 超卖反弹获利"},
-                {"name": "尾部风险平价", "reason": "CVaR+动量联合优化，避开高尾部风险资产"},
-                {"name": "回撤控制策略", "reason": "回撤阈值自动降仓，控制下行风险"},
-            ],
-        },
-        "震荡": {
-            "label": "  震荡",
-            "color": "#757575",
-            "bg": "#f5f5f5",
-            "advice": "方向不明，适合均值回归和分散化配置",
-            "strategies": [
-                {"name": "均值回归策略", "reason": "RSI 超卖超买交替，天然适合震荡"},
-                {"name": "低相关性组合策略", "reason": "最大分散化降低震荡市的来回割"},
-                {"name": "风险平价策略", "reason": "不判断方向，按波动率均衡分配"},
-            ],
-        },
-        "中性": {
-            "label": "  中性",
-            "color": "#757575",
-            "bg": "#f5f5f5",
-            "advice": "无明确信号，均衡配置等待方向",
-            "strategies": [
-                {"name": "风险平价策略", "reason": "不判断方向，按波动率均衡分配"},
-                {"name": "双动量策略", "reason": "绝对动量过滤，正收益资产才持有"},
-                {"name": "低相关性组合策略", "reason": "分散化配置，降低整体波动"},
-            ],
-        },
-    }
-
     rec = REGIME_RECOMMENDATIONS.get(regime["regime"], REGIME_RECOMMENDATIONS["中性"])
 
     # 渲染体制卡片
     st.markdown(
         f'<div style="padding:1rem 1.2rem;background:{rec["bg"]};border-left:5px solid {rec["color"]};'
         f'border-radius:0 0.5rem 0.5rem 0;margin-bottom:1rem;">'
-        f'<div style="font-size:1.5rem;font-weight:bold;color:{rec["color"]};">{rec["label"]}</div>'
+        f'<div style="font-size:1.5rem;font-weight:bold;color:{rec["color"]};">{rec["label"]}{tip_icon(MARKET_REGIME)}</div>'
         f'<div style="color:#555;margin-top:0.3rem;">{regime["description"]}</div>'
         f'<div style="color:#333;margin-top:0.5rem;font-weight:500;">  {rec["advice"]}</div>'
-        f'<div style="color:#888;margin-top:0.3rem;font-size:0.85rem;">综合评分 {composite:.0f} · 波动率 {vol_regime}</div>'
+        f'<div style="color:#888;margin-top:0.3rem;font-size:0.85rem;">'
+        f'综合评分 {composite:.0f}{tip_icon(COMPOSITE_SCORE)} · '
+        f'波动率 {vol_regime}{tip_icon(VOL_REGIME)}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )

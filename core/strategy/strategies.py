@@ -17,7 +17,17 @@ from core.strategy.indicators import (
     calc_rsi,
     calc_correlation_matrix,
     calc_cvar,
+    detect_market_regime,
 )
+from core.strategy.temperature import (
+    calc_temperature,
+    simulate_symbol_positions,
+    simulate_portfolio_drawdown,
+    apply_drawdown_overlay,
+    COMPOSITE_DD_HALVE,
+    COMPOSITE_DD_FLATTEN,
+)
+from core.strategy.kelly import kelly_weights, mu_from_momentum, mu_from_temperature
 from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 
 
@@ -50,6 +60,12 @@ STRATEGY_CATEGORIES = {
         "subtitle": "从混乱中受益",
         "description": "核心假设：不预测黑天鹅，用期权构建凸性收益——小亏多次，大赚少次。",
         "market_view": "平时付保险费（标准 0.3%/月，激进 0.5%/月），暴跌时 BS 模型凸性收益放大",
+    },
+    "动态配置": {
+        "label": "  动态配置",
+        "subtitle": "因时而变",
+        "description": "核心假设：不同市场环境需要不同策略，体制切换而非押注单一策略。",
+        "market_view": "牛市用动量、危机用对冲、震荡用分散——理论上全环境都能活",
     },
 }
 
@@ -336,6 +352,7 @@ class DualMomentumStrategy(BaseStrategy):
     description = "绝对动量过滤熊市 + 相对动量选最强资产，熊市自动切现金"
     category = "趋势动量"
     top_n: int = 3
+    lookback_period: int = 252  # 12 个月
 
     def generate_weights(
         self,
@@ -345,18 +362,18 @@ class DualMomentumStrategy(BaseStrategy):
     ) -> Dict[str, float]:
         sliced = _slice_data(all_data, current_date, lookback_days)
 
-        # 计算各资产 12 个月收益率（绝对动量）
-        returns_12m = {}
+        # 计算各资产收益率（绝对动量）
+        returns = {}
         for symbol, close in sliced.items():
-            if len(close) >= 252:
-                ret = (close.iloc[-1] / close.iloc[-252] - 1) * 100
-                returns_12m[symbol] = ret
+            if len(close) >= self.lookback_period:
+                ret = (close.iloc[-1] / close.iloc[-self.lookback_period] - 1) * 100
+                returns[symbol] = ret
 
-        if not returns_12m:
+        if not returns:
             return {}
 
         # 绝对动量过滤：只保留正收益的资产
-        positive = {s: r for s, r in returns_12m.items() if r > 0}
+        positive = {s: r for s, r in returns.items() if r > 0}
 
         if not positive:
             # 所有资产收益为负 → 全部持有现金
@@ -369,6 +386,34 @@ class DualMomentumStrategy(BaseStrategy):
         # 等权分配
         weight = 1.0 / len(selected)
         return {s: weight for s, _ in selected}
+
+
+class DualMomentum6MStrategy(DualMomentumStrategy):
+    """双动量 6 个月版
+
+    缩短回望期到 6 个月，对近期趋势更敏感。
+    优势：更快响应趋势变化，减少滞后。
+    劣势：信号更频繁，假信号更多。
+    """
+
+    name = "双动量6个月"
+    description = "6 个月回望期，对近期趋势更敏感，信号更频繁"
+    category = "趋势动量"
+    lookback_period = 126  # 6 个月
+
+
+class DualMomentum3MStrategy(DualMomentumStrategy):
+    """双动量 3 个月版
+
+    最短回望期，极度敏感。
+    优势：最快响应趋势反转。
+    劣势：噪音最多，可能在震荡市频繁进出。
+    """
+
+    name = "双动量3个月"
+    description = "3 个月回望期，极度敏感，最快响应趋势反转"
+    category = "趋势动量"
+    lookback_period = 63  # 3 个月
 
 
 class MomentumVolFilterStrategy(BaseStrategy):
@@ -519,6 +564,398 @@ class DrawdownControlStrategy(BaseStrategy):
         weights = {s: w * position_scale for s, w in base_weights.items() if w * position_scale > 0}
 
         return weights
+
+
+def _slice_ohlcv(
+    all_data: Dict[str, pd.DataFrame],
+    current_date: pd.Timestamp,
+    lookback_days: int = 2000,
+) -> Dict[str, pd.DataFrame]:
+    """截取截至 current_date 的 OHLCV，保留完整回看窗口（温度需要长历史）"""
+    result = {}
+    for symbol, df in all_data.items():
+        if df.empty:
+            continue
+        window = df[df["date"] <= current_date].tail(lookback_days)
+        if len(window) > 0:
+            result[symbol] = window.reset_index(drop=True)
+    return result
+
+
+class TemperatureTrendStrategy(BaseStrategy):
+    """温度趋势轮动策略
+
+    七档温度（冻-寒-凉-平-温-热-沸）状态机 + 吊灯止损 + 组合回撤红线：
+    - 热区开仓（温转热），温区持有减半，温转平离场
+    - 吊灯止损跟随峰值，浮盈后收紧，硬止损 -8%
+    - top 5 按温度排序，单票上限 20%，组合 DD -9%/-14% 减半/清仓
+
+    无实例状态，每次调用从价格历史完整重放，保证可复现。
+    """
+
+    name = "温度趋势轮动"
+    description = "七档温度状态机择时 + 吊灯移动止损拿主升浪 + 回撤红线控尾部，单票 20% 上限"
+    category = "趋势动量"
+    rebalance_freq = "W"
+
+    top_n: int = 5
+    per_name_cap: float = 0.20
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
+        if not ohlcv:
+            return {}
+
+        temps = {}
+        sizes = {}
+        closes = {}
+
+        for symbol, df in ohlcv.items():
+            close = df["close"]
+            high = df["high"] if "high" in df.columns else close * 1.01
+            low = df["low"] if "low" in df.columns else close * 0.99
+            if len(close) < 126:
+                continue
+            temp = calc_temperature(close, high, low)
+            pos = simulate_symbol_positions(close, high, low, temp)
+            temps[symbol] = temp
+            sizes[symbol] = pos["size"]
+            closes[symbol] = close
+
+        if not sizes:
+            return {}
+
+        # 当日候选：size>0 按温度排序取 top_n
+        candidates = []
+        for symbol, size_series in sizes.items():
+            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
+            if size <= 0:
+                continue
+            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
+            if np.isnan(t_val):
+                continue
+            candidates.append((symbol, t_val, size))
+
+        if not candidates:
+            return {}
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        selected = candidates[: self.top_n]
+
+        raw_weights = {}
+        for symbol, _, size in selected:
+            w = min(self.per_name_cap, size / 0.85 * self.per_name_cap)
+            if w > 0:
+                raw_weights[symbol] = w
+
+        if not raw_weights:
+            return {}
+
+        # 组合回撤红线：用基础权重路径模拟模型净值（未计手续费，留缓冲）
+        current_dd, _ = simulate_portfolio_drawdown(
+            sizes, closes, per_name_cap=self.per_name_cap
+        )
+        return apply_drawdown_overlay(
+            raw_weights, current_dd,
+            halve_threshold=COMPOSITE_DD_HALVE,
+            flatten_threshold=COMPOSITE_DD_FLATTEN,
+        )
+
+
+class TemperatureTrendV2Strategy(TemperatureTrendStrategy):
+    """温度趋势轮动 V2 — 修「温转热踩空」
+
+    V1 问题：止损离场后状态回落到温，无法回补，错过后续主升浪。
+    V2 改动：
+    - 上位温区（T≥65）允许以 0.40 热度进场（捕捉温→热的过程）
+    - 冷却期延长到 10 日，降低来回打脸的换手成本
+    信号/风控骨架与 V1 相同，便于对照。
+    """
+
+    name = "温度趋势轮动V2"
+    description = "V1 + 上位温区可回补（T≥65 进场）+ 冷却 10 日降换手，修转热踩空"
+    warm_entry_t: float = 65.0
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
+        if not ohlcv:
+            return {}
+
+        temps = {}
+        sizes = {}
+        closes = {}
+
+        for symbol, df in ohlcv.items():
+            close = df["close"]
+            high = df["high"] if "high" in df.columns else close * 1.01
+            low = df["low"] if "low" in df.columns else close * 0.99
+            if len(close) < 126:
+                continue
+            temp = calc_temperature(close, high, low)
+            pos = simulate_symbol_positions(
+                close, high, low, temp,
+                cooldown_days=10,
+                warm_entry_t=self.warm_entry_t,
+            )
+            temps[symbol] = temp
+            sizes[symbol] = pos["size"]
+            closes[symbol] = close
+
+        if not sizes:
+            return {}
+
+        candidates = []
+        for symbol, size_series in sizes.items():
+            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
+            if size <= 0:
+                continue
+            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
+            if np.isnan(t_val):
+                continue
+            candidates.append((symbol, t_val, size))
+
+        if not candidates:
+            return {}
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        selected = candidates[: self.top_n]
+
+        raw_weights = {}
+        for symbol, _, size in selected:
+            w = min(self.per_name_cap, size / 0.85 * self.per_name_cap)
+            if w > 0:
+                raw_weights[symbol] = w
+
+        if not raw_weights:
+            return {}
+
+        current_dd, _ = simulate_portfolio_drawdown(
+            sizes, closes, per_name_cap=self.per_name_cap
+        )
+        return apply_drawdown_overlay(
+            raw_weights, current_dd,
+            halve_threshold=COMPOSITE_DD_HALVE,
+            flatten_threshold=COMPOSITE_DD_FLATTEN,
+        )
+
+
+class DualMomentumKellyStrategy(DualMomentumStrategy):
+    """双动量 × 分数凯利配比
+
+    信号与双动量完全一致（12M 绝对动量过滤 + 相对动量选强）。
+    分仓从等权 33% 改为 1/4 凯利：w = clip(0.25·μ̂/σ², 0, 20%)。
+    μ̂ 用 12M 动量温和压缩，σ̂ 用 60 日已实现波动率。
+    """
+
+    name = "双动量×凯利"
+    description = "双动量信号不变，分仓改为 1/4 凯利 μ̂/σ² + 单票 20% 硬顶"
+    top_n: int = 5
+    kelly_k: float = 0.25
+    max_weight: float = 0.20
+    vol_window: int = 60
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        sliced = _slice_data(all_data, current_date, lookback_days)
+
+        returns = {}
+        for symbol, close in sliced.items():
+            if len(close) >= self.lookback_period:
+                ret = (close.iloc[-1] / close.iloc[-self.lookback_period] - 1) * 100
+                returns[symbol] = ret
+
+        if not returns:
+            return {}
+
+        positive = {s: r for s, r in returns.items() if r > 0}
+        if not positive:
+            return {}
+
+        ranked = sorted(positive.items(), key=lambda x: x[1], reverse=True)
+        selected = ranked[: self.top_n]
+
+        mu_map = {}
+        vol_map = {}
+        for symbol, ret in selected:
+            close = sliced[symbol]
+            mu_map[symbol] = mu_from_momentum(ret)
+            vol = calc_volatility(close, window=self.vol_window)
+            if vol and vol > 0:
+                vol_map[symbol] = vol / 100.0  # 转小数
+
+        return kelly_weights(
+            mu_map, vol_map,
+            k=self.kelly_k,
+            max_weight=self.max_weight,
+        )
+
+
+class MomentumVolKellyStrategy(MomentumVolFilterStrategy):
+    """动量选股 × 凯利波动率配比
+
+    选股同「动量+波动率过滤」（动量分 ≥ 阈值选 top N）。
+    分仓从 target_vol/实际vol 改为分数凯利 μ̂/σ²，同时保留总仓位波动率上限。
+    """
+
+    name = "动量波动率×凯利"
+    description = "动量选股不变，分仓改为 1/4 凯利 μ̂/σ²，波动率上限兜底"
+    top_n: int = 5
+    kelly_k: float = 0.25
+    max_weight: float = 0.20
+    vol_window: int = 60
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        sliced = _slice_data(all_data, current_date, lookback_days)
+
+        scores = {}
+        for symbol, close in sliced.items():
+            score = calc_momentum_score(close)
+            if score is not None:
+                scores[symbol] = score
+
+        if not scores:
+            return {}
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        selected = [(s, sc) for s, sc in ranked if sc >= self.min_momentum][: self.top_n]
+        if not selected:
+            return {}
+
+        mu_map = {}
+        vol_map = {}
+        for symbol, score in selected:
+            close = sliced.get(symbol)
+            if close is None or len(close) < 63:
+                continue
+            # 动量分 0-100 → 超出 50 的部分当优势
+            ret_proxy = (score - 50.0) * 0.4  # 80 分 → +12% 预期
+            mu_map[symbol] = mu_from_momentum(ret_proxy)
+            vol = calc_volatility(close, window=self.vol_window)
+            if vol and vol > 0:
+                vol_map[symbol] = vol / 100.0
+
+        weights = kelly_weights(
+            mu_map, vol_map,
+            k=self.kelly_k,
+            max_weight=self.max_weight,
+        )
+
+        # 波动率上限：组合目标 12% 年化（沿用原策略风控）
+        if weights and vol_map:
+            port_vol = sum(weights[s] * vol_map[s] for s in weights if s in vol_map)
+            if port_vol > self.target_vol / 100.0 > 0:
+                scale = (self.target_vol / 100.0) / port_vol
+                weights = {s: w * scale for s, w in weights.items()}
+
+        return weights
+
+
+class TemperatureKellyStrategy(BaseStrategy):
+    """温度轮动 × 凯利连续配比
+
+    温度 T 作为 μ̂ 代理：T=50 → 0，T=80 → +0.45×15% 预期优势。
+    开仓/持有由温度状态机决定，分仓用 1/4 凯利 μ̂/σ² 替代热度档位。
+    """
+
+    name = "温度轮动×凯利"
+    description = "温度 T 作 μ̂ 连续凯利分仓，状态机择时 + 吊灯止损 + 回撤红线"
+    category = "趋势动量"
+    rebalance_freq = "W"
+
+    top_n: int = 5
+    kelly_k: float = 0.25
+    max_weight: float = 0.20
+    vol_window: int = 60
+    target_annual: float = 0.15
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
+        if not ohlcv:
+            return {}
+
+        temps = {}
+        sizes = {}
+        closes = {}
+        vols = {}
+
+        for symbol, df in ohlcv.items():
+            close = df["close"]
+            high = df["high"] if "high" in df.columns else close * 1.01
+            low = df["low"] if "low" in df.columns else close * 0.99
+            if len(close) < 126:
+                continue
+            temp = calc_temperature(close, high, low)
+            pos = simulate_symbol_positions(close, high, low, temp)
+            temps[symbol] = temp
+            sizes[symbol] = pos["size"]
+            closes[symbol] = close
+            v = calc_volatility(close, window=self.vol_window)
+            if v and v > 0:
+                vols[symbol] = v / 100.0
+
+        if not sizes:
+            return {}
+
+        candidates = []
+        for symbol, size_series in sizes.items():
+            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
+            if size <= 0:
+                continue
+            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
+            if np.isnan(t_val) or symbol not in vols:
+                continue
+            candidates.append((symbol, t_val, size))
+
+        if not candidates:
+            return {}
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        selected = candidates[: self.top_n]
+
+        mu_map = {s: mu_from_temperature(t, self.target_annual) for s, t, _ in selected}
+        vol_map = {s: vols[s] for s, _, _ in selected}
+
+        raw_weights = kelly_weights(
+            mu_map, vol_map,
+            k=self.kelly_k,
+            max_weight=self.max_weight,
+        )
+
+        if not raw_weights:
+            return {}
+
+        current_dd, _ = simulate_portfolio_drawdown(
+            sizes, closes, per_name_cap=self.max_weight
+        )
+        return apply_drawdown_overlay(
+            raw_weights, current_dd,
+            halve_threshold=COMPOSITE_DD_HALVE,
+            flatten_threshold=COMPOSITE_DD_FLATTEN,
+        )
 
 
 class _AntifragileBase:
@@ -829,6 +1266,129 @@ class DrawdownConstraintStrategy(BaseStrategy):
         weights = {s: (iv / total_inv) * investable for s, iv in inv_vol.items()}
 
         return weights
+
+
+# ============================================================
+# 体制切换策略
+# ============================================================
+
+# 体制→策略映射（固定，理论驱动）
+_REGIME_STRATEGY_MAP = {
+    "风险偏好": "双动量3个月",       # 趋势向上时动量收割
+    "避险": "风险平价",             # 波动率反比配置，自动降仓
+    "危机": "反脆弱激进版",          # 尾部对冲暴跌时凸性收益
+    "滞胀担忧": "均值回归",          # 震荡市 RSI 超卖反弹
+    "震荡": "低相关性组合",          # 最大分散化降低来回割
+    "中性": "双动量",               # 绝对动量过滤
+}
+
+
+class RegimeSwitchingStrategy(BaseStrategy):
+    """体制切换策略
+
+    根据市场体制（风险偏好/避险/危机/滞胀/震荡/中性）动态选择最优子策略。
+    理论驱动的固定映射，非数据拟合。
+
+    防抖动机制：
+    - 连续 5 个交易日判定同一体制才触发切换
+    - 切换后至少持有 1 个再平衡周期
+
+    月度再平衡。
+    """
+
+    name = "体制切换策略"
+    description = "根据市场体制动态选择最优策略，防抖动连续确认"
+    category = "动态配置"
+    rebalance_freq = "M"
+
+    # 连续确认阈值（交易日数）
+    CONSECUTIVE_THRESHOLD = 5
+    # 最小持有期（再平衡次数）
+    MIN_HOLDING_PERIODS = 1
+
+    def __init__(self):
+        # 子策略实例缓存（延迟初始化）
+        self._sub_strategies: Dict[str, BaseStrategy] = {}
+        # 切换状态
+        self._current_regime: str = "中性"
+        self._consecutive_count: int = 0
+        self._holding_periods: int = 0
+        self._sub_strategy: BaseStrategy = None
+
+    def _get_sub_strategy(self, name: str) -> BaseStrategy:
+        """延迟初始化子策略实例"""
+        if name not in self._sub_strategies:
+            # 按名称查找策略类
+            strategy_map = {
+                "双动量": DualMomentumStrategy,
+                "双动量3个月": DualMomentum3MStrategy,
+                "双动量6个月": DualMomentum6MStrategy,
+                "风险平价": RiskParityStrategy,
+                "反脆弱激进版": AntifragileAggressiveStrategy,
+                "均值回归": MeanReversionStrategy,
+                "低相关性组合": MinCorrelationStrategy,
+            }
+            cls = strategy_map.get(name)
+            if cls:
+                self._sub_strategies[name] = cls()
+            else:
+                # 回退到双动量
+                self._sub_strategies[name] = DualMomentumStrategy()
+        return self._sub_strategies[name]
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        # 获取 SPY/TLT/CL 数据用于体制检测
+        spy_df = all_data.get("SPY")
+        tlt_df = all_data.get("TLT")
+        cl_df = all_data.get("CL")
+
+        if spy_df is None or spy_df.empty:
+            # 无数据时使用默认策略
+            if self._sub_strategy is None:
+                self._sub_strategy = self._get_sub_strategy("双动量")
+            return self._sub_strategy.generate_weights(current_date, all_data, lookback_days)
+
+        # 截取到当前日期的数据
+        spy_close = spy_df[spy_df["date"] <= current_date]["close"]
+        tlt_close = tlt_df[tlt_df["date"] <= current_date]["close"] if tlt_df is not None and not tlt_df.empty else pd.Series()
+        cl_close = cl_df[cl_df["date"] <= current_date]["close"] if cl_df is not None and not cl_df.empty else pd.Series()
+
+        # 检测体制
+        detected_regime = "中性"
+        if len(spy_close) >= 60 and not tlt_close.empty and not cl_close.empty:
+            regime_info = detect_market_regime(spy_close, tlt_close, cl_close)
+            detected_regime = regime_info.get("regime", "中性")
+
+        # 防抖动逻辑
+        if detected_regime == self._current_regime:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_count = 1
+
+        # 每次再平衡增加持有期
+        self._holding_periods += 1
+
+        # 判断是否满足切换条件
+        can_switch = (
+            self._consecutive_count >= self.CONSECUTIVE_THRESHOLD
+            and self._holding_periods >= self.MIN_HOLDING_PERIODS
+            and detected_regime != self._current_regime
+        )
+
+        if can_switch or self._sub_strategy is None:
+            # 首次初始化或满足切换条件
+            target_name = _REGIME_STRATEGY_MAP.get(detected_regime, "双动量")
+            self._sub_strategy = self._get_sub_strategy(target_name)
+            self._current_regime = detected_regime
+            self._holding_periods = 0
+
+        # 委托子策略生成权重
+        return self._sub_strategy.generate_weights(current_date, all_data, lookback_days)
 
 
 def _calc_max_dd(close: pd.Series) -> float:

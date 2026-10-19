@@ -21,8 +21,15 @@ from core.strategy.strategies import (
     MeanReversionStrategy,
     MinCorrelationStrategy,
     DualMomentumStrategy,
+    DualMomentum6MStrategy,
+    DualMomentum3MStrategy,
     MomentumVolFilterStrategy,
     DrawdownControlStrategy,
+    TemperatureTrendStrategy,
+    TemperatureTrendV2Strategy,
+    DualMomentumKellyStrategy,
+    MomentumVolKellyStrategy,
+    TemperatureKellyStrategy,
     AntifragileStrategy,
     AntifragileAggressiveStrategy,
     AntifragileWeeklyStrategy,
@@ -33,6 +40,10 @@ from core.strategy.strategies import (
 )
 from core.backtest import BacktestEngine, BacktestResult
 from app.components.charts import create_multi_line_chart, create_drawdown_chart
+from app.components.tooltips import (
+    ANNUAL_RETURN, TOTAL_RETURN, MAX_DRAWDOWN,
+    SHARPE_RATIO, VOLATILITY, WIN_RATE, tip_icon,
+)
 
 # 页面配置
 st.set_page_config(
@@ -45,8 +56,15 @@ st.set_page_config(
 STRATEGY_REGISTRY = {
     "趋势跟踪策略": TrendFollowingStrategy,
     "双动量策略": DualMomentumStrategy,
+    "双动量6个月": DualMomentum6MStrategy,
+    "双动量3个月": DualMomentum3MStrategy,
     "动量+波动率过滤": MomentumVolFilterStrategy,
     "回撤控制策略": DrawdownControlStrategy,
+    "温度趋势轮动": TemperatureTrendStrategy,
+    "温度趋势轮动V2": TemperatureTrendV2Strategy,
+    "双动量×凯利": DualMomentumKellyStrategy,
+    "动量波动率×凯利": MomentumVolKellyStrategy,
+    "温度轮动×凯利": TemperatureKellyStrategy,
     "均值回归策略": MeanReversionStrategy,
     "风险平价策略": RiskParityStrategy,
     "低相关性组合策略": MinCorrelationStrategy,
@@ -174,7 +192,15 @@ def render_metrics_table(results: List[BacktestResult]):
 
     if rows:
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                     column_config={
+                         "年化收益": st.column_config.TextColumn(help=ANNUAL_RETURN),
+                         "总收益": st.column_config.TextColumn(help=TOTAL_RETURN),
+                         "最大回撤": st.column_config.TextColumn(help=MAX_DRAWDOWN),
+                         "夏普比率": st.column_config.TextColumn(help=SHARPE_RATIO),
+                         "年化波动率": st.column_config.TextColumn(help=VOLATILITY),
+                         "月度胜率": st.column_config.TextColumn(help=WIN_RATE),
+                     })
 
 
 def render_strategy_card(result: BacktestResult):
@@ -219,33 +245,33 @@ def render_strategy_card(result: BacktestResult):
     metrics_html = f"""
     <div style="display:flex; gap:24px; flex-wrap:wrap; margin:8px 0;">
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">年化收益</div>
+            <div style="font-size:13px; color:#888;">年化收益{tip_icon(ANNUAL_RETURN)}</div>
             <div style="font-size:18px; font-weight:600; color:{'#2ecc71' if result.annualized_return >= 0 else '#e74c3c'};">
                 {result.annualized_return:+.2f}%
             </div>
         </div>
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">最大回撤</div>
+            <div style="font-size:13px; color:#888;">最大回撤{tip_icon(MAX_DRAWDOWN)}</div>
             <div style="font-size:18px; font-weight:600; color:#e74c3c;">
                 {result.max_drawdown:.2f}%
             </div>
         </div>
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">夏普比率</div>
+            <div style="font-size:13px; color:#888;">夏普比率{tip_icon(SHARPE_RATIO)}</div>
             <div style="font-size:18px; font-weight:600;">{result.sharpe_ratio:.2f}</div>
         </div>
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">总收益</div>
+            <div style="font-size:13px; color:#888;">总收益{tip_icon(TOTAL_RETURN)}</div>
             <div style="font-size:18px; font-weight:600; color:{'#2ecc71' if result.total_return >= 0 else '#e74c3c'};">
                 {result.total_return:+.2f}%
             </div>
         </div>
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">年化波动率</div>
+            <div style="font-size:13px; color:#888;">年化波动率{tip_icon(VOLATILITY)}</div>
             <div style="font-size:18px; font-weight:600;">{result.volatility:.2f}%</div>
         </div>
         <div style="flex:1; min-width:120px;">
-            <div style="font-size:13px; color:#888;">月度胜率</div>
+            <div style="font-size:13px; color:#888;">月度胜率{tip_icon(WIN_RATE)}</div>
             <div style="font-size:18px; font-weight:600;">{result.win_rate:.1f}%</div>
         </div>
     </div>
