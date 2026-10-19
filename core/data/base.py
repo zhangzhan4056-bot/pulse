@@ -53,6 +53,21 @@ def check_response(data: dict, context: str = "") -> None:
         raise ValueError(f"API 错误 [{context}]: {code} - {message}")
 
 
+class SharedRateLimiter:
+    """共享速率限制器 — 多个方法共享同一个时间戳，确保不超 API 总限额"""
+
+    def __init__(self, calls_per_minute: int):
+        self.min_interval = 60.0 / calls_per_minute
+        self._last_call = 0.0
+
+    def wait(self):
+        """等待直到可以发起下一次调用"""
+        elapsed = time.time() - self._last_call
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self._last_call = time.time()
+
+
 class BaseFetcher:
     """基础数据获取器"""
 

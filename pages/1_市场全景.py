@@ -20,7 +20,7 @@ from core.data.config import MACRO_INDICATORS
 from core.data.macro_fetcher import MacroFetcher
 from core.data.macro_storage import MacroStorage
 from core.data.macro_analyzer import compute_macro_analysis
-from core.strategy.indicators import calc_momentum_score, calc_returns
+from core.strategy.indicators import calc_momentum_score, calc_returns, calc_volatility
 from app.components.charts import (
     create_candlestick_chart,
     create_line_chart,
@@ -30,6 +30,11 @@ from app.components.macro_charts import (
     create_macro_indicator_scatter,
     create_macro_timeline,
     render_macro_value_cards,
+)
+from app.components.tooltips import (
+    VIX, MOMENTUM_SCORE, DRAWDOWN, VOLATILITY,
+    CORRELATION, NARRATIVE_SHOCK, MACRO_SIMILARITY, MACRO_OUTLOOK,
+    RETURN_7D, RETURN_1M, RETURN_3M,
 )
 
 # 页面配置
@@ -203,9 +208,10 @@ def get_data_last_updated(dm: DataManager) -> str:
     return "暂无数据"
 
 
-def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: int = 90) -> dict:
-    """获取资产数据（含历史走势）"""
-    # 计算日期范围
+@st.cache_data(ttl=300)
+def get_asset_data_with_history(symbol: str, desc: str, days: int = 90) -> dict:
+    """获取资产数据（含历史走势）— 5分钟缓存"""
+    dm = get_data_manager()
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -227,10 +233,15 @@ def get_asset_data_with_history(dm: DataManager, symbol: str, desc: str, days: i
 
 
 def refresh_all_data(dm: DataManager, progress_bar) -> dict:
-    """从 API 获取所有资产数据 + 宏观数据"""
-    import time
+    """从 API 获取所有资产数据 + 宏观数据
+
+    逻辑：检查每个 symbol 的最新日期，今日已有数据的跳过。
+    Twelve Data 限速由 @rate_limit 装饰器处理，无需手动 sleep。
+    """
+    from datetime import date as _date
 
     results = {"us": {}, "cn": {}, "global": {}, "sectors": {}, "macro": {}}
+    today_str = _date.today().strftime("%Y-%m-%d")
 
     # 1. 美股大类资产（Twelve Data，限速 8 次/分钟）
     us_symbols = list(US_SYMBOLS.keys())
@@ -238,6 +249,11 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
     step = 0
 
     for i, symbol in enumerate(us_symbols):
+        last_date = dm.storage.get_last_date(symbol)
+        if last_date == today_str:
+            results["us"][symbol] = 0  # 已是最新，跳过
+            step += 1
+            continue
         try:
             progress_bar.progress(
                 step / total_steps, text=f"美股 {symbol} ({i+1}/{len(us_symbols)})..."
@@ -245,8 +261,6 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
             df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
             count = dm.storage.save(df, symbol, "twelvedata")
             results["us"][symbol] = count
-            if i < len(us_symbols) - 1:
-                time.sleep(8)
         except Exception as e:
             results["us"][symbol] = f"错误: {e}"
         step += 1
@@ -254,6 +268,11 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
     # 2. 美股板块 ETF（Twelve Data）
     sector_symbols = list(US_SECTORS_SYMBOLS.keys())
     for i, symbol in enumerate(sector_symbols):
+        last_date = dm.storage.get_last_date(symbol)
+        if last_date == today_str:
+            results["sectors"][symbol] = 0
+            step += 1
+            continue
         try:
             progress_bar.progress(
                 step / total_steps,
@@ -262,8 +281,6 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
             df = dm.twelvedata.get_time_series(symbol, outputsize=2000)
             count = dm.storage.save(df, symbol, "twelvedata")
             results["sectors"][symbol] = count
-            if i < len(sector_symbols) - 1:
-                time.sleep(8)
         except Exception as e:
             results["sectors"][symbol] = f"错误: {e}"
         step += 1
@@ -310,6 +327,11 @@ def main():
     dm = get_data_manager()
     macro_storage = get_macro_storage()
 
+    # 如果首页自动刷新过宏观数据，清除缓存以加载最新
+    if st.session_state.get("startup_refreshed") and not st.session_state.get("macro_cache_cleared"):
+        st.session_state["macro_cache_cleared"] = True
+        run_macro_analysis.clear()
+
     # 检查数据库是否有数据
     stats = dm.get_stats()
     db_empty = stats.empty
@@ -333,33 +355,55 @@ def main():
         # 显示数据最后更新时间
         last_updated = get_data_last_updated(dm)
         st.caption(f"指数数据更新至: {last_updated}")
+        if last_updated != "暂无数据":
+            idx_days = (datetime.now() - datetime.strptime(last_updated, "%Y-%m-%d")).days
+            if idx_days >= 7:
+                st.error(f"指数数据已 {idx_days} 天未更新")
+            elif idx_days >= 3:
+                st.warning(f"指数数据已 {idx_days} 天未更新")
 
         macro_stats_df = macro_storage.get_stats()
         if not macro_stats_df.empty:
             last_macro_date = macro_stats_df["last_date"].max()
             st.caption(f"宏观数据更新至: {last_macro_date}")
+            macro_days = (datetime.now() - datetime.strptime(last_macro_date, "%Y-%m-%d")).days
+            if macro_days >= 90:
+                st.error(f"宏观数据已 {macro_days} 天未更新（月度数据正常滞后 30-60 天）")
+            elif macro_days >= 60:
+                st.warning(f"宏观数据已 {macro_days} 天未更新")
 
         # 一键获取按钮（指数 + 宏观）
         if st.button("  一键获取所有数据", use_container_width=True, type="primary"):
-            st.warning("首次获取需要约 3 分钟（美股限速），请耐心等待...")
             progress_bar = st.progress(0, text="开始获取...")
 
             results = refresh_all_data(dm, progress_bar)
 
-            # 统计结果
+            # 统计结果（>0 = 新获取，0 = 已跳过，str = 错误）
             us_ok = sum(1 for v in results["us"].values() if isinstance(v, int) and v > 0)
+            us_skip = sum(1 for v in results["us"].values() if v == 0)
             sectors_ok = sum(1 for v in results["sectors"].values() if isinstance(v, int) and v > 0)
+            sectors_skip = sum(1 for v in results["sectors"].values() if v == 0)
             cn_ok = sum(1 for v in results.get("cn", {}).values() if isinstance(v, int) and v > 0)
             global_ok = sum(1 for v in results.get("global", {}).values() if isinstance(v, int) and v > 0)
             macro_ok = sum(1 for v in results.get("macro", {}).values() if isinstance(v, int) and v > 0)
 
-            st.success(
-                f"美股 {us_ok}/{len(US_SYMBOLS)} | "
-                f"板块 {sectors_ok}/{len(US_SECTORS_SYMBOLS)} | "
-                f"A股 {cn_ok}/{len(CN_SYMBOLS)} | "
-                f"亚太 {global_ok}/{len(GLOBAL_SYMBOLS)} | "
-                f"宏观 {macro_ok}/5"
-            )
+            total_new = us_ok + sectors_ok + cn_ok + global_ok + macro_ok
+            total_skip = us_skip + sectors_skip
+            if total_new == 0 and total_skip > 0:
+                st.info(f"所有数据已是最新，跳过 {total_skip} 个 symbol")
+            else:
+                parts = [f"美股 {us_ok}/{len(US_SYMBOLS)}"]
+                if us_skip:
+                    parts[0] += f" (跳过{us_skip})"
+                parts.append(f"板块 {sectors_ok}/{len(US_SECTORS_SYMBOLS)}")
+                if sectors_skip:
+                    parts[-1] += f" (跳过{sectors_skip})"
+                parts.extend([
+                    f"A股 {cn_ok}/{len(CN_SYMBOLS)}",
+                    f"亚太 {global_ok}/{len(GLOBAL_SYMBOLS)}",
+                    f"宏观 {macro_ok}/5",
+                ])
+                st.success(" | ".join(parts))
             st.rerun()
 
         st.divider()
@@ -368,7 +412,7 @@ def main():
     # ============================================================
     # 宏观观测（顶部）
     # ============================================================
-    st.subheader("  宏观观测")
+    st.subheader("  宏观观测", help=MACRO_SIMILARITY)
     st.caption("通过对比当前宏观环境与历史相似时期，预判后续市场走势")
 
     if not macro_storage.has_data():
@@ -427,7 +471,10 @@ def main():
                         merged = similar.merge(forward, on="month", how="left")
                         display_df = merged[["rank", "month", "distance"]].copy()
                         display_df["月份"] = display_df["month"].dt.strftime("%Y-%m")
-                        display_df["相似度"] = display_df["distance"].apply(lambda x: f"{x:.2f}")
+                        # 距离转相似度百分比（距离0=100%，距离100+=0%）
+                        display_df["相似度"] = display_df["distance"].apply(
+                            lambda x: f"{max(0, 100 - x):.0f}%"
+                        )
 
                         for col in ["spy_6m", "spy_12m"]:
                             if col in merged.columns:
@@ -441,7 +488,12 @@ def main():
                             "spy_12m": "SPY 12M",
                         })
                         display_df = display_df[["#", "月份", "相似度", "SPY 6M", "SPY 12M"]]
-                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                        st.dataframe(display_df, use_container_width=True, hide_index=True,
+                                     column_config={
+                                         "相似度": st.column_config.TextColumn(help=MACRO_SIMILARITY),
+                                         "SPY 6M": st.column_config.TextColumn(help="相似月份后 6 个月的 SPY 实际收益率"),
+                                         "SPY 12M": st.column_config.TextColumn(help="相似月份后 12 个月的 SPY 实际收益率"),
+                                     })
 
                         # 结论摘要
                         avg_spy_6m = forward["spy_6m"].dropna().mean()
@@ -459,6 +511,7 @@ def main():
                                 f"**宏观展望: {outlook}** — "
                                 f"SPY 6M 均值 {avg_spy_6m:+.1f}%，12M 均值 {avg_spy_12m:+.1f}%"
                             )
+                            st.caption(f"  {MACRO_OUTLOOK}")
 
                 # 3. 百分位走势图
                 ranked = analysis["ranked"]
@@ -524,7 +577,7 @@ def main():
             cols = st.columns(len(US_SYMBOLS))
             for col, (symbol, desc) in zip(cols, US_SYMBOLS.items()):
                 with col:
-                    data = get_asset_data_with_history(dm, symbol, desc, days=90)
+                    data = get_asset_data_with_history(symbol, desc, days=90)
                     if data:
                         render_asset_card(
                             data["desc"],
@@ -550,7 +603,7 @@ def main():
         cols = st.columns(len(CN_SYMBOLS))
         for col, (symbol, name) in zip(cols, CN_SYMBOLS.items()):
             with col:
-                data = get_asset_data_with_history(dm, symbol, name, days=90)
+                data = get_asset_data_with_history(symbol, name, days=90)
                 if data:
                     render_asset_card(
                         data["desc"],
@@ -576,7 +629,7 @@ def main():
         cols = st.columns(len(GLOBAL_SYMBOLS))
         for col, (symbol, name) in zip(cols, GLOBAL_SYMBOLS.items()):
             with col:
-                data = get_asset_data_with_history(dm, symbol, name, days=90)
+                data = get_asset_data_with_history(symbol, name, days=90)
                 if data:
                     render_asset_card(
                         data["desc"],
@@ -596,7 +649,7 @@ def main():
     # ============================================================
     # 美股板块热度
     # ============================================================
-    st.subheader("  美股板块热度")
+    st.subheader("  美股板块热度", help="按动量评分排序的美股板块 ETF，动量越高表示近期趋势越强")
 
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
@@ -633,7 +686,12 @@ def main():
                 lambda x: f"{x:.0f}" if x else "N/A"
             )
 
-            st.dataframe(display_sector, use_container_width=True)
+            st.dataframe(display_sector, use_container_width=True,
+                         column_config={
+                             "动量评分": st.column_config.NumberColumn(help=MOMENTUM_SCORE),
+                             "1月%": st.column_config.TextColumn(help=RETURN_1M),
+                             "3月%": st.column_config.TextColumn(help=RETURN_3M),
+                         })
 
             top_sectors = sector_df.head(3)
             hot_names = "、".join(top_sectors["板块"].tolist())
@@ -643,6 +701,366 @@ def main():
 
     except Exception as e:
         st.error(f"板块数据获取失败: {e}")
+
+    st.divider()
+
+    # ============================================================
+    # VIX 恐慌指数 + 事件日历
+    # ============================================================
+    col_vix, col_calendar = st.columns([1, 2])
+
+    with col_vix:
+        st.subheader("  VIX 恐慌指数", help=VIX)
+        try:
+            macro_storage = get_macro_storage()
+            vix_df = macro_storage.load("vix")
+            if not vix_df.empty:
+                vix_value = vix_df.iloc[-1]["value"]
+                vix_date = vix_df.iloc[-1]["date"]
+
+                if vix_value > 25:
+                    vix_color = "#d32f2f"
+                    vix_label = "恐慌"
+                    vix_bg = "#ffebee"
+                elif vix_value > 20:
+                    vix_color = "#e65100"
+                    vix_label = "警惕"
+                    vix_bg = "#fff3e0"
+                elif vix_value > 15:
+                    vix_color = "#f9a825"
+                    vix_label = "正常"
+                    vix_bg = "#fffde7"
+                else:
+                    vix_color = "#2e7d32"
+                    vix_label = "平静"
+                    vix_bg = "#e8f5e9"
+
+                # 5 日变化
+                vix_change = ""
+                if len(vix_df) >= 5:
+                    vix_5d = vix_df.iloc[-5]["value"]
+                    if vix_5d > 0:
+                        change = (vix_value - vix_5d) / vix_5d * 100
+                        vix_change = f"5日 {change:+.0f}%"
+
+                st.markdown(
+                    f'<div style="padding:1rem;background:{vix_bg};border-radius:0.5rem;'
+                    f'border-left:5px solid {vix_color};text-align:center;">'
+                    f'<div style="font-size:2.5rem;font-weight:bold;color:{vix_color};">{vix_value:.1f}</div>'
+                    f'<div style="font-size:1.1rem;color:{vix_color};font-weight:600;">{vix_label}</div>'
+                    f'<div style="color:#666;font-size:0.85rem;">{vix_date} {vix_change}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("暂无 VIX 数据")
+        except Exception as e:
+            st.warning(f"VIX 数据加载失败: {e}")
+
+    with col_calendar:
+        st.subheader("  未来 14 天风险日历")
+        try:
+            from core.data.event_calendar import get_upcoming_events, get_current_risk_level
+
+            level, reasons = get_current_risk_level()
+            events = get_upcoming_events(days=14)
+
+            # 当前风险等级
+            if level == "high":
+                st.error(f"当前风险等级：**高** — 未来 3 天内有重要事件")
+            elif level == "medium":
+                st.warning(f"当前风险等级：**中** — 未来 7 天内有事件")
+            else:
+                st.success("当前风险等级：**低**")
+
+            if events:
+                event_data = []
+                for e in events:
+                    days_until = (datetime.strptime(e.date, "%Y-%m-%d").date() - datetime.now().date()).days
+                    event_data.append({
+                        "日期": e.date,
+                        "距今": f"{days_until}天" if days_until > 0 else "今天",
+                        "事件": e.name,
+                        "风险": "  高" if e.risk_level == "high" else "  中",
+                        "类别": e.category,
+                    })
+                st.dataframe(pd.DataFrame(event_data), use_container_width=True, hide_index=True)
+            else:
+                st.info("未来 14 天无重要事件")
+        except Exception as e:
+            st.warning(f"事件日历加载失败: {e}")
+
+    st.divider()
+
+    # ============================================================
+    # 持仓关注（风险仪表盘）
+    # ============================================================
+    st.subheader("  持仓关注")
+    st.caption("关注的板块和基金实时状态 + 风险仪表盘")
+
+    try:
+        from core.data.config import WATCHED_HOLDINGS
+        from core.scanner.sector_alert import detect_sector_alerts
+
+        # 加载关注资产数据
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+        # 收集所有持仓数据用于相关性计算
+        holdings_close = {}  # {symbol: pd.Series}
+        holdings_meta = {}   # {symbol: {info, df, ...}}
+
+        for symbol, info in WATCHED_HOLDINGS.items():
+            df = dm.load(symbol, start_date, end_date)
+            if not df.empty:
+                holdings_close[symbol] = df["close"].reset_index(drop=True)
+                holdings_meta[symbol] = {"info": info, "df": df}
+
+        # ---- 第一行：各持仓卡片 ----
+        if holdings_meta:
+            watch_cols = st.columns(len(holdings_meta))
+            for i, (symbol, meta) in enumerate(holdings_meta.items()):
+                with watch_cols[i]:
+                    info = meta["info"]
+                    df = meta["df"]
+                    close = df["close"]
+                    latest_price = close.iloc[-1]
+                    prev_price = close.iloc[-2] if len(close) >= 2 else latest_price
+                    change_pct = (latest_price / prev_price - 1) * 100
+
+                    # 7 日收益
+                    ret_7d = (close.iloc[-1] / close.iloc[-7] - 1) * 100 if len(close) >= 7 else 0
+
+                    # 动量评分
+                    mom = calc_momentum_score(close)
+                    mom_str = f"{mom:.0f}" if mom else "N/A"
+
+                    # 波动率
+                    vol = calc_volatility(close) if len(close) >= 20 else None
+
+                    # 当前回撤（从历史最高点）
+                    peak = close.expanding().max()
+                    drawdown = (close.iloc[-1] / peak.iloc[-1] - 1) * 100
+
+                    # 距离止损线（-15%）的距离
+                    stop_loss = -15.0
+                    distance_to_stop = drawdown - stop_loss  # 正数=安全，负数=已突破
+
+                    if info["type"] == "fund":
+                        st.metric(
+                            label=info["name"],
+                            value=f"{latest_price:.4f}",
+                            delta=f"{change_pct:+.2f}%",
+                        )
+                    else:
+                        st.metric(
+                            label=info["name"],
+                            value=f"${latest_price:.2f}",
+                            delta=f"{change_pct:+.2f}%",
+                        )
+
+                    # 回撤与止损线
+                    if distance_to_stop < 0:
+                        dd_color = "#d32f2f"
+                        dd_label = "已突破止损!"
+                    elif distance_to_stop < 3:
+                        dd_color = "#e65100"
+                        dd_label = "接近止损"
+                    elif distance_to_stop < 6:
+                        dd_color = "#f9a825"
+                        dd_label = "需关注"
+                    else:
+                        dd_color = "#2e7d32"
+                        dd_label = "安全"
+
+                    st.markdown(
+                        f'<div style="padding:0.3rem 0.5rem;background:#f8f9fa;border-radius:0.3rem;'
+                        f'border-left:3px solid {dd_color};margin:0.3rem 0;">'
+                        f'<span style="font-size:0.8rem;color:#555;">回撤: </span>'
+                        f'<span style="font-weight:600;color:{dd_color};">{drawdown:.1f}%</span>'
+                        f'<span style="font-size:0.8rem;color:#888;"> / 止损 {stop_loss:.0f}%</span>'
+                        f'<span style="font-size:0.75rem;color:{dd_color};margin-left:0.5rem;">{dd_label}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    vol_str = f"{vol:.0f}%" if vol else "N/A"
+                    st.caption(f"7日: {ret_7d:+.1f}% | 动量: {mom_str} | 年化波动: {vol_str}")
+
+        # ---- 第二行：相关性热力图 + 波动率状态 ----
+        if len(holdings_close) >= 2:
+            col_corr, col_vol_regime = st.columns([3, 2])
+
+            with col_corr:
+                st.markdown("**  持仓相关性热力图**", help=CORRELATION)
+                st.caption("相关性 > 0.8 = 本质上是同一笔赌注")
+
+                # 构建收益率 DataFrame
+                returns_df = pd.DataFrame()
+                name_map = {}
+                for sym, s in holdings_close.items():
+                    name = WATCHED_HOLDINGS[sym]["name"]
+                    name_map[sym] = name
+                    returns_df[name] = s.pct_change().dropna()
+
+                corr_matrix = returns_df.corr()
+
+                # Plotly 热力图
+                labels = [name_map.get(s, s) for s in holdings_close.keys()]
+                fig_corr = go.Figure(data=go.Heatmap(
+                    z=corr_matrix.values,
+                    x=corr_matrix.columns.tolist(),
+                    y=corr_matrix.index.tolist(),
+                    colorscale=[
+                        [0, "#26a69a"],
+                        [0.5, "#fff9c4"],
+                        [0.8, "#ff9800"],
+                        [1, "#d32f2f"],
+                    ],
+                    zmin=0, zmax=1,
+                    text=[[f"{v:.2f}" for v in row] for row in corr_matrix.values],
+                    texttemplate="%{text}",
+                    textfont=dict(size=14),
+                    hovertemplate="%{x} vs %{y}<br>相关系数: %{z:.3f}<extra></extra>",
+                ))
+                fig_corr.update_layout(
+                    height=300,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    xaxis=dict(tickfont=dict(size=12)),
+                    yaxis=dict(tickfont=dict(size=12), autorange="reversed"),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_corr, use_container_width=True, config={"displayModeBar": False})
+
+                # 相关性警告
+                high_corr_pairs = []
+                cols_list = corr_matrix.columns.tolist()
+                for ii in range(len(cols_list)):
+                    for jj in range(ii + 1, len(cols_list)):
+                        c = corr_matrix.iloc[ii, jj]
+                        if c > 0.8:
+                            high_corr_pairs.append(f"{cols_list[ii]} ↔ {cols_list[jj]}: {c:.2f}")
+                if high_corr_pairs:
+                    st.warning("高相关性持仓（分散化不足）:\n" + "\n".join(f"- {p}" for p in high_corr_pairs))
+
+            with col_vol_regime:
+                st.markdown("**  波动率状态**", help=VOLATILITY)
+                st.caption("当前波动率 vs 历史中位数")
+
+                for sym, meta in holdings_meta.items():
+                    info = meta["info"]
+                    close = meta["df"]["close"]
+                    name = info["name"]
+
+                    if len(close) < 60:
+                        continue
+
+                    # 当前 20 日波动率
+                    daily_ret = close.pct_change().dropna()
+                    vol_20d = daily_ret.tail(20).std() * np.sqrt(252) * 100
+
+                    # 历史 60 日中位数波动率（滚动 20 日窗口）
+                    rolling_vol = daily_ret.rolling(20).std() * np.sqrt(252) * 100
+                    vol_median = rolling_vol.tail(60).median()
+
+                    if vol_median > 0:
+                        vol_ratio = vol_20d / vol_median
+                    else:
+                        vol_ratio = 1.0
+
+                    # 分类
+                    if vol_ratio > 1.8:
+                        regime = "极端"
+                        regime_color = "#d32f2f"
+                        regime_bg = "#ffebee"
+                    elif vol_ratio > 1.3:
+                        regime = "偏高"
+                        regime_color = "#e65100"
+                        regime_bg = "#fff3e0"
+                    elif vol_ratio < 0.7:
+                        regime = "偏低"
+                        regime_color = "#1565c0"
+                        regime_bg = "#e3f2fd"
+                    else:
+                        regime = "正常"
+                        regime_color = "#2e7d32"
+                        regime_bg = "#e8f5e9"
+
+                    short_name = name[:6] if len(name) > 6 else name
+                    st.markdown(
+                        f'<div style="padding:0.4rem 0.6rem;background:{regime_bg};border-radius:0.3rem;'
+                        f'margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">'
+                        f'<span style="font-size:0.85rem;color:#333;">{short_name}</span>'
+                        f'<span style="font-weight:600;color:{regime_color};">{regime} ({vol_20d:.0f}%)</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+        # ---- 第三行：叙事冲击检测 ----
+        st.markdown("**  叙事冲击检测**", help=NARRATIVE_SHOCK)
+        st.caption("5 日跌幅 > 历史日均跌幅 2 倍 = 可能存在叙事冲击（非基本面变化）")
+
+        shock_found = False
+        for sym, meta in holdings_meta.items():
+            close = meta["df"]["close"]
+            name = meta["info"]["name"]
+
+            if len(close) < 60:
+                continue
+
+            daily_ret = close.pct_change().dropna()
+
+            # 历史平均日跌幅（只计下跌日）
+            down_days = daily_ret[daily_ret < 0]
+            if len(down_days) < 10:
+                continue
+            avg_daily_drop = down_days.mean()  # 负数
+
+            # 最近 5 日跌幅
+            ret_5d = (close.iloc[-1] / close.iloc[-6] - 1) if len(close) >= 6 else 0
+
+            # 叙事冲击判定：5 日跌幅 > 2 倍历史日均跌幅（绝对值）
+            if ret_5d < 0 and abs(ret_5d) > abs(avg_daily_drop) * 2:
+                shock_found = True
+                severity = "critical" if abs(ret_5d) > abs(avg_daily_drop) * 3 else "warning"
+                icon = " " if severity == "critical" else " "
+                color = "#d32f2f" if severity == "critical" else "#e65100"
+
+                st.markdown(
+                    f'<div style="padding:0.5rem 0.8rem;background:#fff3e0;border-left:4px solid {color};'
+                    f'border-radius:0 0.3rem 0.3rem 0;margin-bottom:0.3rem;">'
+                    f'{icon} <span style="font-weight:600;color:{color};">{name}</span>'
+                    f'<span style="color:#555;"> — 5日跌幅 {ret_5d*100:+.1f}%，'
+                    f'历史日均跌幅 {avg_daily_drop*100:.1f}%，'
+                    f'偏离 {abs(ret_5d/avg_daily_drop):.1f}x</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        if not shock_found:
+            st.success("当前无叙事冲击信号")
+
+        # ---- 板块异常检测 ----
+        sector_data = {}
+        for symbol in US_SECTORS_SYMBOLS:
+            df = dm.load(symbol, start_date, end_date)
+            if not df.empty:
+                sector_data[symbol] = df
+
+        spy_df = dm.load("SPY", start_date, end_date)
+        if sector_data and not spy_df.empty:
+            alerts = detect_sector_alerts(sector_data, spy_df)
+            if alerts:
+                st.markdown("**  近期板块异常信号：**")
+                for a in alerts[:5]:
+                    icon = " " if a.severity == "critical" else " "
+                    st.markdown(f"- {icon} {a.message}")
+            else:
+                st.success("板块无异常信号")
+
+    except Exception as e:
+        st.warning(f"持仓关注加载失败: {e}")
 
     st.divider()
 

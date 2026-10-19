@@ -36,6 +36,10 @@ from core.strategy.indicators import (
     detect_market_regime,
     calc_regime_score,
 )
+from app.components.tooltips import (
+    COMPOSITE_SCORE, VOL_REGIME, MARKET_REGIME,
+    MOMENTUM_SCORE, DRAWDOWN, MA_ALIGNMENT,
+)
 
 
 # ============================================================
@@ -103,16 +107,17 @@ def _render_market_context(data: Dict[str, pd.DataFrame]):
     with col_regime:
         st.markdown(
             f'<div style="padding:0.8rem 1rem;background:{bg};border-left:4px solid {color};border-radius:0 0.3rem 0.3rem 0;">'
-            f'<span style="font-size:1.3rem;font-weight:bold;color:{color};">{regime["regime"]}</span>'
+            f'<span style="font-size:1.3rem;font-weight:bold;color:{color};" title="{MARKET_REGIME}">{regime["regime"]}</span>'
             f'<span style="color:#666;margin-left:0.5rem;">{regime["description"]}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with col_score:
-        st.metric("综合评分", f"{composite:.0f}", delta=vol_regime, delta_color="off")
+        st.metric("综合评分", f"{composite:.0f}", delta=vol_regime, delta_color="off",
+                   help=f"{COMPOSITE_SCORE}\n\n波动率状态: {VOL_REGIME}")
 
     # 关键资产快照
-    key_assets = ["SPY", "QQQ", "000300", "TLT"]
+    key_assets = ["SPY", "QQQ", "000300", "TLT", "GLD"]
     cols = st.columns(len(key_assets))
     for col, symbol in zip(cols, key_assets):
         if symbol not in data:
@@ -131,8 +136,8 @@ def _render_market_context(data: Dict[str, pd.DataFrame]):
             st.markdown(
                 f'<div style="text-align:center;padding:0.5rem;background:#fafafa;border-radius:0.3rem;">'
                 f'<div style="font-size:0.8rem;color:#888;">{name}</div>'
-                f'<div style="font-size:1.1rem;font-weight:600;color:{trend_color};">{alignment}</div>'
-                f'<div style="font-size:0.8rem;color:{dd_color};">回撤 {dd:.1f}%</div>'
+                f'<div style="font-size:1.1rem;font-weight:600;color:{trend_color};" title="{MA_ALIGNMENT}">{alignment}</div>'
+                f'<div style="font-size:0.8rem;color:{dd_color};" title="{DRAWDOWN}">回撤 {dd:.1f}%</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )

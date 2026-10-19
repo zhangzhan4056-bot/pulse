@@ -12,6 +12,11 @@ import streamlit as st
 import pandas as pd
 
 from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from app.components.tooltips import (
+    TREND_SCORE, REVERSION_SCORE, RISK_SCORE, MOMENTUM_SCORE,
+    RSI, MACD_SIGNAL, MA_ALIGNMENT, DRAWDOWN, VOLATILITY,
+    RETURN_1M, RETURN_3M, tip_icon,
+)
 from core.scanner.scorer import (
     AssetScore,
     OPPORTUNITY_TREND_BUY,
@@ -143,29 +148,40 @@ def render_opportunity_group(
             })
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
+        with st.expander("  指标说明", expanded=False):
+            st.markdown(
+                f"- **趋势分**: {TREND_SCORE.split(chr(10))[1]}\n"
+                f"- **回归分**: {REVERSION_SCORE.split(chr(10))[1]}\n"
+                f"- **风险分**: {RISK_SCORE.split(chr(10))[1]}\n"
+                f"- **动量**: {MOMENTUM_SCORE.split(chr(10))[1]}\n"
+                f"- **RSI**: {RSI.split(chr(10))[1]}\n"
+                f"- **均线**: {MA_ALIGNMENT.split(chr(10))[1]}\n"
+                f"- **回撤**: {DRAWDOWN.split(chr(10))[1]}\n"
+                f"- **波动率**: {VOLATILITY.split(chr(10))[1]}"
+            )
 
 
 def _render_asset_card(s: AssetScore, cfg: dict):
     """单个资产的机会卡片"""
-    # 关键指标
+    # 关键指标（带 CSS tooltip）
     indicators = []
     if s.momentum is not None:
-        indicators.append(f"动量 {s.momentum:.0f}")
+        indicators.append(f'动量 {s.momentum:.0f}{tip_icon(MOMENTUM_SCORE)}')
     if s.ma_alignment:
-        indicators.append(s.ma_alignment)
+        indicators.append(f'{s.ma_alignment}{tip_icon(MA_ALIGNMENT)}')
     if s.rsi is not None:
-        indicators.append(f"RSI {s.rsi:.0f}")
+        indicators.append(f'RSI {s.rsi:.0f}{tip_icon(RSI)}')
     if s.macd_signal and s.macd_signal != "无信号":
-        indicators.append(s.macd_signal)
+        indicators.append(f'{s.macd_signal}{tip_icon(MACD_SIGNAL)}')
 
     indicator_text = " · ".join(indicators)
 
     # 回撤/波动率（风险相关）
     risk_parts = []
     if s.current_drawdown < -5:
-        risk_parts.append(f"回撤 {s.current_drawdown:.1f}%")
+        risk_parts.append(f'回撤 {s.current_drawdown:.1f}%{tip_icon(DRAWDOWN)}')
     if s.volatility > 20:
-        risk_parts.append(f"波动率 {s.volatility:.1f}%")
+        risk_parts.append(f'波动率 {s.volatility:.1f}%{tip_icon(VOLATILITY)}')
     risk_text = ""
     if risk_parts:
         risk_text = f'<span style="color:#c62828;font-size:0.8rem;margin-left:0.5rem;">{" · ".join(risk_parts)}</span>'
@@ -264,3 +280,15 @@ def render_full_table(scores: List[AssetScore]):
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
+    with st.expander("  指标说明", expanded=False):
+        st.markdown(
+            f"- **趋势分**: {TREND_SCORE.split(chr(10))[1]}\n"
+            f"- **回归分**: {REVERSION_SCORE.split(chr(10))[1]}\n"
+            f"- **风险分**: {RISK_SCORE.split(chr(10))[1]}\n"
+            f"- **动量**: {MOMENTUM_SCORE.split(chr(10))[1]}\n"
+            f"- **RSI**: {RSI.split(chr(10))[1]}\n"
+            f"- **均线**: {MA_ALIGNMENT.split(chr(10))[1]}\n"
+            f"- **回撤%**: {DRAWDOWN.split(chr(10))[1]}\n"
+            f"- **波动率%**: {VOLATILITY.split(chr(10))[1]}\n"
+            f"- **1月%/3月%**: {RETURN_1M.split(chr(10))[1]}"
+        )

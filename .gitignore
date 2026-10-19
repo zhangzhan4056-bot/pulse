@@ -9,7 +9,7 @@ build/
 venv/
 .venv/
 
-# 数据文件
+# 数据文件（不入库，Streamlit Cloud 上数据库本就临时）
 data/*.db
 data/*.sqlite
 
@@ -34,3 +34,7 @@ Thumbs.db
 tmp/
 *.tmp
 scripts/sweep_results.csv
+
+# 工作敏感/无关文档（不入库）
+未开户用户敏感度标签体系.xlsx
+docs/预流失*

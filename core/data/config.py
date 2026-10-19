@@ -55,6 +55,9 @@ ASSETS = {
     "us_oil": {
         "CL": "WTI原油期货",
     },
+    "us_commodity": {
+        "GLD": "黄金ETF",
+    },
     # A股指数（受美股影响大，作为辅助观测）
     "cn_equity": {
         "399006": "创业板指",
@@ -84,7 +87,7 @@ ASSETS = {
 # 所有美股 symbol
 US_SYMBOLS = {
     sym: desc
-    for category in ["us_equity", "us_bond", "us_oil"]
+    for category in ["us_equity", "us_bond", "us_oil", "us_commodity"]
     for sym, desc in ASSETS[category].items()
 }
 
@@ -96,6 +99,45 @@ GLOBAL_SYMBOLS = ASSETS["global_equity"]
 
 # 美股板块 ETF symbol
 US_SECTORS_SYMBOLS = ASSETS["us_sectors"]
+
+# 关注持仓（用于风险预警的特别监控）
+WATCHED_HOLDINGS = {
+    # 美股板块
+    "XLK": {"name": "科技ETF", "type": "sector", "threshold": "sensitive"},
+    # A股场外基金
+    "011369": {"name": "华商均衡成长混合A", "type": "fund"},
+    "000979": {"name": "景顺长城沪港深精选", "type": "fund"},
+    "012922": {"name": "易方达全球成长精选C", "type": "fund"},
+    "457001": {"name": "国富亚洲机会股票A", "type": "fund"},
+}
+
+# SEC EDGAR 13-F 跟踪机构列表（CIK 零填充 10 位，已验证）
+THIRTEEN_F_MANAGERS = {
+    "0001067983": {"name": "Berkshire Hathaway", "category": "other"},
+    "0001350694": {"name": "Bridgewater Associates", "category": "hedge_fund"},
+    "0001423053": {"name": "Citadel Advisors", "category": "hedge_fund"},
+    "0001603466": {"name": "Point72 Asset Management", "category": "hedge_fund"},
+    "0001037389": {"name": "Renaissance Technologies", "category": "hedge_fund"},
+    "0001179392": {"name": "Two Sigma Investments", "category": "hedge_fund"},
+    "0001273087": {"name": "Millennium Management", "category": "hedge_fund"},
+    "0001009207": {"name": "D.E. Shaw & Co.", "category": "hedge_fund"},
+    "0001048445": {"name": "Elliott Management", "category": "hedge_fund"},
+    "0001029160": {"name": "Soros Fund Management", "category": "hedge_fund"},
+    "0001167483": {"name": "Tiger Global Management", "category": "hedge_fund"},
+    "0001135730": {"name": "Coatue Management", "category": "hedge_fund"},
+    "0001040273": {"name": "Third Point", "category": "hedge_fund"},
+    "0001336528": {"name": "Pershing Square Capital", "category": "hedge_fund"},
+    "0001167557": {"name": "AQR Capital Management", "category": "hedge_fund"},
+    "0001061768": {"name": "Baupost Group", "category": "hedge_fund"},
+    "0001103804": {"name": "Viking Global Investors", "category": "hedge_fund"},
+    "0001061165": {"name": "Lone Pine Capital", "category": "hedge_fund"},
+    "0001656456": {"name": "Appaloosa Management", "category": "hedge_fund"},
+    "0000921669": {"name": "Carl Icahn", "category": "other"},
+}
+
+# SEC EDGAR 配置
+EDGAR_USER_AGENT = "MarketPulse research@marketpulse.com"
+EDGAR_RATE_LIMIT = 0.12  # 请求间隔秒数（SEC 限制 10 req/sec）
 
 # Twelve Data API 配置
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
@@ -135,13 +177,21 @@ MACRO_INDICATORS = {
         "frequency": "monthly",
         "fred_series": "UNRATE",    # Unemployment Rate (Monthly, Seasonally Adjusted)
     },
+    "vix": {
+        "name": "VIX 恐慌指数",
+        "unit": "点",
+        "frequency": "daily",
+        "fred_series": "VIXCLS",    # CBOE Volatility Index (Daily)
+        "is_index": False,
+    },
 }
 
-MACRO_DISPLAY_ORDER = ["cpi_yoy", "ppi", "treasury_10y", "fedfunds", "unemployment"]
+MACRO_DISPLAY_ORDER = ["cpi_yoy", "ppi", "treasury_10y", "fedfunds", "unemployment", "vix"]
 MACRO_COLORS = {
     "cpi_yoy": "#ef5350",
     "ppi": "#ff9800",
     "treasury_10y": "#2196f3",
     "fedfunds": "#9c27b0",
     "unemployment": "#607d8b",
+    "vix": "#d32f2f",
 }

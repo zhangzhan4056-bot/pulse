@@ -4,19 +4,21 @@ from typing import Optional
 
 import pandas as pd
 
-from .base import BaseFetcher, rate_limit, check_response
+from .base import BaseFetcher, SharedRateLimiter, check_response
 from .config import get_api_key, TWELVEDATA_BASE_URL, TWELVEDATA_RATE_LIMIT
 
 
 class TwelveDataFetcher(BaseFetcher):
     """Twelve Data API 数据获取器"""
 
+    # 类级别共享限速器 — 所有实例共用一个，确保不超 API 总限额
+    _rate_limiter = SharedRateLimiter(TWELVEDATA_RATE_LIMIT)
+
     def __init__(self):
         super().__init__()
         self.api_key = get_api_key()
         self.base_url = TWELVEDATA_BASE_URL
 
-    @rate_limit(TWELVEDATA_RATE_LIMIT)
     def get_quote(self, symbol: str) -> dict:
         """获取实时报价
 
@@ -26,6 +28,7 @@ class TwelveDataFetcher(BaseFetcher):
         Returns:
             dict: 包含 symbol, price, change, percent_change 等
         """
+        self._rate_limiter.wait()
         resp = self.session.get(
             f"{self.base_url}/quote",
             params={"symbol": symbol, "apikey": self.api_key},
@@ -35,7 +38,6 @@ class TwelveDataFetcher(BaseFetcher):
         check_response(data, f"quote/{symbol}")
         return data
 
-    @rate_limit(TWELVEDATA_RATE_LIMIT)
     def get_time_series(
         self,
         symbol: str,
@@ -56,6 +58,7 @@ class TwelveDataFetcher(BaseFetcher):
         Returns:
             DataFrame: 标准化列名 (date, open, high, low, close, volume)
         """
+        self._rate_limiter.wait()
         params = {
             "symbol": symbol,
             "interval": interval,
