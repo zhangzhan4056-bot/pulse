@@ -1,12 +1,13 @@
 """回测引擎 - 模拟策略在历史数据上的表现"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from core.strategy.indicators import calc_drawdown
+from core.data.config import CASH_PROXY
 
 
 @dataclass
@@ -25,6 +26,7 @@ class BacktestResult:
     win_rate: float  # 月度胜率 (%)
     num_rebalances: int  # 再平衡次数
     weight_history: pd.DataFrame  # 每次再平衡的权重记录
+    dd_brake_events: list = field(default_factory=list)  # 组合回撤刹车触发记录
 
 
 def _calc_option_payoff(
@@ -112,6 +114,11 @@ class BacktestEngine:
         hedge_vol: float = 0.20,
         use_bs_cost: bool = False,
         rebalance_freq: str = "M",
+        portfolio_dd_brake: bool = False,
+        dd_halve: float = -0.10,
+        dd_flatten: float = -0.15,
+        dd_restore: Optional[float] = None,
+        dd_brake_intraday: bool = False,
     ) -> BacktestResult:
         """执行单个策略的回测
 
@@ -126,6 +133,12 @@ class BacktestEngine:
             hedge_vol: BS 公式年化波动率（默认 20%，日频建议 30%）
             use_bs_cost: True=用 BS 公式动态计算权利金成本（更真实），False=用固定 hedge_monthly_cost
             rebalance_freq: 再平衡频率 "M"(月) / "W"(周) / "D"(日)
+            portfolio_dd_brake: 是否启用组合回撤红线（风控：-10% 减半 / -15% 清仓）
+            dd_halve: 减半阈值（负值，-0.10 = 回撤 10%）
+            dd_flatten: 清仓阈值（负值，-0.15 = 回撤 15%）
+            dd_restore: 恢复阈值。None=再平衡日直接按当前 DD 定档；
+                给负值（如 -0.05）=已减仓后需 DD 收窄到该值以内才允许提高风险档
+            dd_brake_intraday: True=月内每日检查紧急减仓；False=只在再平衡日评估
 
         Returns:
             BacktestResult 回测结果
@@ -156,12 +169,90 @@ class BacktestEngine:
 
         # 初始化
         portfolio_value = 1.0
+        peak_value = 1.0
         current_weights = {}  # {symbol: weight}
         equity_records = []
         return_records = []
         weight_history = []
         hedge_costs = []
         hedge_payoffs = []
+        dd_brake_events = []
+        cash_proxy = CASH_PROXY
+        risk_scale = 1.0  # 1.0=满配 / 0.5=已减半 / 0.0=已清仓
+
+        def _fill_cash(weights: Dict[str, float]) -> Dict[str, float]:
+            if cash_proxy not in all_data:
+                return weights
+            total_w = sum(weights.values()) if weights else 0.0
+            if total_w < 1.0 - 1e-9:
+                weights = dict(weights) if weights else {}
+                weights[cash_proxy] = weights.get(cash_proxy, 0.0) + (1.0 - total_w)
+                if weights[cash_proxy] <= 1e-9:
+                    del weights[cash_proxy]
+            return weights
+
+        def _scale_risk(weights: Dict[str, float], scale: float) -> Dict[str, float]:
+            """按 scale 压缩风险仓位，释放的资金进现金代理。scale=0 清仓"""
+            new_w: Dict[str, float] = {}
+            released = 0.0
+            for s, w in (weights or {}).items():
+                if s == cash_proxy:
+                    new_w[s] = new_w.get(s, 0.0) + w
+                else:
+                    new_w[s] = new_w.get(s, 0.0) + w * scale
+                    released += w * (1.0 - scale)
+            if released > 1e-9:
+                new_w[cash_proxy] = new_w.get(cash_proxy, 0.0) + released
+            return {s: w for s, w in new_w.items() if w > 1e-9}
+
+        def _dd_target_scale(dd: float) -> float:
+            if dd <= dd_flatten:
+                return 0.0
+            if dd <= dd_halve:
+                return 0.5
+            return 1.0
+
+        def _apply_dd_brake(weights: Dict[str, float], date, is_rebalance: bool = False):
+            """组合回撤红线。再平衡日对新权重按当前 DD 定档；月内只降不升。"""
+            nonlocal peak_value, risk_scale
+            peak_value = max(peak_value, portfolio_value)
+            if peak_value <= 0:
+                return weights
+            dd = portfolio_value / peak_value - 1.0
+            target = _dd_target_scale(dd)
+
+            if is_rebalance:
+                # 滞后恢复（可选）：已减仓后，DD 收窄到 dd_restore 以内才允许提高风险档位
+                # 注意：清仓后净值冻结，DD 不会自己修复——用 dd_restore 有死锁风险，
+                # 默认 None（每次再平衡按当前 DD 重新定档）
+                if dd_restore is not None and risk_scale < 1.0 and dd <= dd_restore:
+                    target = min(target, risk_scale)
+                if target < 1.0:
+                    dd_brake_events.append(
+                        {
+                            "date": date,
+                            "action": "flatten" if target == 0.0 else "halve",
+                            "dd": dd,
+                        }
+                    )
+                    risk_scale = target
+                    return _scale_risk(weights, target)
+                risk_scale = 1.0
+                return weights
+
+            # 月内：只允许进一步减仓，不提前恢复
+            if target < risk_scale:
+                dd_brake_events.append(
+                    {
+                        "date": date,
+                        "action": "flatten" if target == 0.0 else "halve",
+                        "dd": dd,
+                    }
+                )
+                factor = target / risk_scale if risk_scale > 0 else 0.0
+                risk_scale = target
+                return _scale_risk(weights, factor)
+            return weights
 
         # 构建各资产的日期索引，加速查找
         asset_indexed = {}
@@ -235,17 +326,14 @@ class BacktestEngine:
             except Exception:
                 new_weights = current_weights
 
+            # 组合回撤红线：用引擎真实净值（含佣金）算 DD，对新权重只降不升
+            if portfolio_dd_brake:
+                new_weights = _apply_dd_brake(new_weights, rebal_date, is_rebalance=True)
+            else:
+                peak_value = max(peak_value, portfolio_value)
+
             # 闲钱进短债：未配满仓位买入 CASH_PROXY，避免 0% 闲置拖累
-            # SHY 是现金代理，不受单票 20% 红线约束（等价于持有短债现金）
-            from core.data.config import CASH_PROXY
-            cash_proxy = CASH_PROXY
-            if cash_proxy in all_data:
-                total_w = sum(new_weights.values()) if new_weights else 0.0
-                if total_w < 1.0 - 1e-9:
-                    new_weights = dict(new_weights) if new_weights else {}
-                    new_weights[cash_proxy] = new_weights.get(cash_proxy, 0.0) + (1.0 - total_w)
-                    if new_weights[cash_proxy] <= 1e-9:
-                        del new_weights[cash_proxy]
+            new_weights = _fill_cash(new_weights)
 
             # 记录权重
             weight_record = {"date": rebal_date}
@@ -265,6 +353,7 @@ class BacktestEngine:
 
             # 再平衡后立即记录权益点（确保成本扣除和权重变化被捕捉）
             equity_records.append({"date": rebal_date, "value": portfolio_value})
+            peak_value = max(peak_value, portfolio_value)
 
             # 确定本周期结束日期
             if i + 1 < len(rebalance_dates):
@@ -293,6 +382,9 @@ class BacktestEngine:
                     if prev_price > 0:
                         daily_return += weight * (curr_price / prev_price - 1)
                 portfolio_value *= (1 + daily_return)
+                peak_value = max(peak_value, portfolio_value)
+                if portfolio_dd_brake and dd_brake_intraday:
+                    current_weights = _apply_dd_brake(current_weights, rebal_date)
                 equity_records[-1]["value"] = portfolio_value
                 return_records.append({"date": rebal_date, "return": daily_return})
 
@@ -318,6 +410,19 @@ class BacktestEngine:
                         daily_return += weight * asset_return
 
                 portfolio_value *= (1 + daily_return)
+                peak_value = max(peak_value, portfolio_value)
+                if portfolio_dd_brake and dd_brake_intraday:
+                    # 月内紧急刹车：触发即按当日收盘减仓，不等下月再平衡
+                    prev_weights = current_weights
+                    current_weights = _apply_dd_brake(current_weights, date)
+                    if current_weights is not prev_weights:
+                        # 紧急调仓也计佣金
+                        _symbols = set(list(prev_weights.keys()) + list(current_weights.keys()))
+                        _turnover = sum(
+                            abs(current_weights.get(s, 0) - prev_weights.get(s, 0))
+                            for s in _symbols
+                        )
+                        portfolio_value *= (1 - _turnover * self.commission_rate)
                 equity_records.append({"date": date, "value": portfolio_value})
                 return_records.append({"date": date, "return": daily_return})
                 prev_date = date
@@ -341,6 +446,7 @@ class BacktestEngine:
             daily_returns=daily_returns,
             num_rebalances=len(weight_history),
             weight_history=pd.DataFrame(weight_history),
+            dd_brake_events=dd_brake_events,
             **metrics,
         )
 
@@ -363,6 +469,7 @@ class BacktestEngine:
             hedge_vol = getattr(strategy, "hedge_vol", 0.20)
             use_bs = getattr(strategy, "use_bs_cost", False)
             rebal_freq = getattr(strategy, "rebalance_freq", "M")
+            dd_brake = getattr(strategy, "portfolio_dd_brake", False)
             result = self.run(
                 strategy, all_data, start_date, end_date,
                 hedge_monthly_cost=hedge_cost,
@@ -371,6 +478,11 @@ class BacktestEngine:
                 hedge_vol=hedge_vol,
                 use_bs_cost=use_bs,
                 rebalance_freq=rebal_freq,
+                portfolio_dd_brake=dd_brake,
+                dd_halve=getattr(strategy, "dd_halve", -0.15),
+                dd_flatten=getattr(strategy, "dd_flatten", -0.20),
+                dd_restore=getattr(strategy, "dd_restore", None),
+                dd_brake_intraday=getattr(strategy, "dd_brake_intraday", False),
             )
             results.append(result)
         return results

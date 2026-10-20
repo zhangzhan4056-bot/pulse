@@ -191,6 +191,11 @@ python scripts/daily_sync.py
 - **等权双动量 top3 = 33%/票，破 20% 红线**：要守红线用「双动量×凯利」（max_weight=0.20）；等权版回测收益更高但单票超限，不能直接上实盘
 - **扩宇宙的主要收益来源是「填满 5 个 20% 名额」**：10 标的时常只有 2-3 个过绝对动量，20% 顶格下最多 40-60% 仓位。23 标的后平均仓位接近满仓，2021 从 +0% 修到 +5%
 - **单策略的组合 DD 重放用基础权重路径**：generate_weights 每次独立重放历史，禁止把 entry/peak/stop 挂在 self 上（引擎 except 时会失步）
+- **不要把 −10%/−15% 组合回撤红线做成自动日频/月频刹车**：对双动量×凯利实测，收益从 +81% 打到 +41~56%，回撤只少 2–3pp，夏普变差。慢熊（2022-03→2023-10，19 个月 −20.5%）里自动减仓=卖在下跌途中。生产默认 **A2：月频 −15% 减半 / −20% 清仓**（`DualMomentumKellyStrategy` 属性）
+- **清仓后不要用「DD 收窄」当恢复仓位条件**：净值冻结后 `DD=NAV/峰值−1` 不会自己修复，会死锁在空仓（实测总收益掉到 +0.9%）。恢复条件要么 None（再平衡按当前 DD 重定档），要么用时间/信号，不能用 DD 修复
+- **组合峰值必须逐日更新**：只在再平衡日 `peak=max(peak,nav)` 会丢掉月内高点，刹车几乎不触发
+- **双账户实盘走「信号统一、执行拆分」**：没有零售平台能一个策略同时驱动老虎+境内券商。每月 `scripts/export_target_weights.py` 出 tiger.json + domestic.csv；A 股次日开盘前、美股当晚执行，两账户各自 20% 顶
+- **月度调仓单必须按出单日 DD 定档，不能贴上月 weight_history**：月频刹车最多滞后一个月，月末满仓单在月中深回撤时会给出错误满仓。`export_target_weights.py` 用 `generate_weights(today)` + 当前模型 DD 重算 A2 档位
 
 - **AkShare 用新浪源**：东方财富源（`*_em` 函数）被墙，一律用 `stock_zh_index_daily`、`index_global_hist_sina`
 - **Twelve Data 免费计划**：每分钟 8 次，`quote` 端点支持的 symbol 比 `time_series` 少，测试新 symbol 用 `time_series`

@@ -4,7 +4,7 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -690,6 +690,13 @@ class DualMomentumKellyStrategy(DualMomentumStrategy):
     kelly_k: float = 0.50
     max_weight: float = 0.20
     vol_window: int = 60
+    # 组合回撤自动化（A2）：月频 -15% 减半 / -20% 清仓。
+    # 不要用 -10%/-15% 做自动刹车（收益 -25pp、回撤只少 2pp），也不要用「DD 收窄」当恢复条件（清仓后死锁）
+    portfolio_dd_brake: bool = True
+    dd_halve: float = -0.15
+    dd_flatten: float = -0.20
+    dd_restore: Optional[float] = None
+    dd_brake_intraday: bool = False
 
     def generate_weights(
         self,
