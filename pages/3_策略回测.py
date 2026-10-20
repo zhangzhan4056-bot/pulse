@@ -17,19 +17,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 from core.strategy.strategies import (
     TrendFollowingStrategy,
+    TimeSeriesMomentumStrategy,
+    CTABreakoutStrategy,
+    MomentumChandelierStrategy,
     RiskParityStrategy,
-    MeanReversionStrategy,
     MinCorrelationStrategy,
     DualMomentumStrategy,
     DualMomentum6MStrategy,
     DualMomentum3MStrategy,
     MomentumVolFilterStrategy,
     DrawdownControlStrategy,
-    TemperatureTrendStrategy,
-    TemperatureTrendV2Strategy,
     DualMomentumKellyStrategy,
     MomentumVolKellyStrategy,
-    TemperatureKellyStrategy,
     AntifragileStrategy,
     AntifragileAggressiveStrategy,
     AntifragileWeeklyStrategy,
@@ -55,17 +54,16 @@ st.set_page_config(
 # 策略注册表（按分类排序）
 STRATEGY_REGISTRY = {
     "趋势跟踪策略": TrendFollowingStrategy,
+    "TSMOM 趋势跟随": TimeSeriesMomentumStrategy,
+    "CTA 突破跟随": CTABreakoutStrategy,
+    "动量吊灯跟随": MomentumChandelierStrategy,
     "双动量策略": DualMomentumStrategy,
     "双动量6个月": DualMomentum6MStrategy,
     "双动量3个月": DualMomentum3MStrategy,
     "动量+波动率过滤": MomentumVolFilterStrategy,
     "回撤控制策略": DrawdownControlStrategy,
-    "温度趋势轮动": TemperatureTrendStrategy,
-    "温度趋势轮动V2": TemperatureTrendV2Strategy,
     "双动量×凯利": DualMomentumKellyStrategy,
     "动量波动率×凯利": MomentumVolKellyStrategy,
-    "温度轮动×凯利": TemperatureKellyStrategy,
-    "均值回归策略": MeanReversionStrategy,
     "风险平价策略": RiskParityStrategy,
     "低相关性组合策略": MinCorrelationStrategy,
     "尾部风险平价": TailRiskParityStrategy,
@@ -77,7 +75,7 @@ STRATEGY_REGISTRY = {
 }
 
 # 按分类分组的策略顺序
-CATEGORY_ORDER = ["趋势动量", "均值回归", "风险配置", "反脆弱"]
+CATEGORY_ORDER = ["趋势跟随", "趋势动量", "风险配置", "反脆弱"]
 
 
 def get_data_manager():

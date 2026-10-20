@@ -19,15 +19,18 @@ from core.strategy.indicators import (
     calc_cvar,
     detect_market_regime,
 )
-from core.strategy.temperature import (
-    calc_temperature,
-    simulate_symbol_positions,
-    simulate_portfolio_drawdown,
-    apply_drawdown_overlay,
-    COMPOSITE_DD_HALVE,
-    COMPOSITE_DD_FLATTEN,
+from core.strategy.kelly import kelly_weights, mu_from_momentum
+from core.strategy.trend_follow import (
+    TSMOM_LOOKBACK,
+    DONCHIAN_ENTRY,
+    DONCHIAN_EXIT,
+    CHAN_K_SLOW,
+    COOLDOWN_SLOW,
+    calc_tsmom_signal,
+    simulate_tsmom_chandelier_positions,
+    simulate_donchian_positions,
+    inverse_vol_weights,
 )
-from core.strategy.kelly import kelly_weights, mu_from_momentum, mu_from_temperature
 from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 
 
@@ -37,17 +40,17 @@ ALL_SYMBOLS = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) + list(GLOBAL_SY
 
 # 策略分类定义
 STRATEGY_CATEGORIES = {
+    "趋势跟随": {
+        "label": "  趋势跟随",
+        "subtitle": "自己在涨就拿",
+        "description": "核心假设：趋势一旦形成就会延续。各资产独立判断自己的方向，不和别的票比强弱。",
+        "market_view": "单边市拿趋势；股票走熊时可切债/金/油；比动量轮动换手更低、更偏防御",
+    },
     "趋势动量": {
         "label": "  趋势/动量",
         "subtitle": "涨的继续涨",
         "description": "核心假设：价格有惯性。过去表现好的资产未来还会好。",
         "market_view": "牛市吃肉，熊市挨打；震荡市容易被来回割",
-    },
-    "均值回归": {
-        "label": "⏪ 均值回归",
-        "subtitle": "跌多了会反弹",
-        "description": "核心假设：价格围绕价值波动，偏离过大后会回归。",
-        "market_view": "与趋势策略天然对冲；震荡市赚钱，单边市容易抄在半山腰",
     },
     "风险配置": {
         "label": " ️ 风险配置",
@@ -126,8 +129,8 @@ class TrendFollowingStrategy(BaseStrategy):
     """
 
     name = "趋势跟踪策略"
-    description = "均线多头排列时持有，空头或交织时清仓，MACD 确认"
-    category = "趋势动量"
+    description = "均线多头排列时持有，空头或交织时清仓，MACD 确认（技术面基线）"
+    category = "趋势跟随"
 
     def generate_weights(
         self,
@@ -175,6 +178,158 @@ class TrendFollowingStrategy(BaseStrategy):
         return weights
 
 
+def _trend_portfolio_weights(selected: List[str], per_name_cap: float = 0.20) -> Dict[str, float]:
+    """趋势跟随组合层：等权 + 单票硬顶，不足 cap 的部分留现金（保本优先）"""
+    if not selected:
+        return {}
+    w = 1.0 / len(selected)
+    weights = {}
+    for s in selected:
+        ww = min(per_name_cap, w)
+        if ww > 0:
+            weights[s] = ww
+    return weights
+
+
+class TimeSeriesMomentumStrategy(BaseStrategy):
+    """TSMOM 时间序列动量 — 各资产独立看自己的 12 月方向
+
+    机构 CTA 的最简形式（AQR TSMOM）：
+    - 信号：12 个月收益符号（正=持有，负=空仓），只看方向不看幅度
+    - 配权：持仓内部反波动率，单票硬顶 20%，剩余现金
+    - 频率：月频，无盘中止损（月内回撤自己扛）
+
+    与双动量的本质区别：不横截面比强弱。SPY 跌而 GLD 涨时会切到 GLD；
+    双动量则把 12M 变负的股票踢掉，但不会主动配 GLD 除非它相对最强。
+    """
+
+    name = "TSMOM 趋势跟随"
+    description = "各资产独立 12 月收益符号择时 + 反波动率配权，月频，单票 20% 上限"
+    category = "趋势跟随"
+    rebalance_freq = "M"
+
+    lookback_period: int = TSMOM_LOOKBACK
+    per_name_cap: float = 0.20
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        sliced = _slice_data(all_data, current_date, lookback_days=max(lookback_days, 300))
+
+        qualifying = []
+        closes = {}
+        for symbol, close in sliced.items():
+            if len(close) <= self.lookback_period:
+                continue
+            closes[symbol] = close
+            if calc_tsmom_signal(close, self.lookback_period):
+                qualifying.append(symbol)
+
+        if not qualifying:
+            return {}
+        return inverse_vol_weights(closes, qualifying, per_name_cap=self.per_name_cap)
+
+
+class CTABreakoutStrategy(BaseStrategy):
+    """CTA 突破跟随 — Donchian 通道 + 吊灯止损
+
+    海龟/管理期货的经典突破流：
+    - 进场：收盘价突破前 55 日最高价（创新高才买，不抄底）
+    - 离场：跌破前 20 日低点，或跌破吊灯线（最高价−3×ATR）
+    - 持有段从价格历史无状态重放；周频让突破/止损及时生效
+
+    换手通常很低（一进一出可拿数月），周频 ≠ 高成本。
+    """
+
+    name = "CTA 突破跟随"
+    description = "55 日新高突破进场 + 20 日低点/吊灯离场，各资产独立，单票 20% 上限"
+    category = "趋势跟随"
+    rebalance_freq = "W"
+
+    entry_lookback: int = DONCHIAN_ENTRY
+    exit_lookback: int = DONCHIAN_EXIT
+    per_name_cap: float = 0.20
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 800))
+        if not ohlcv:
+            return {}
+
+        candidates = []
+        for symbol, df in ohlcv.items():
+            if len(df) < self.entry_lookback + 30:
+                continue
+            close = df["close"]
+            high = df["high"] if "high" in df.columns else close * 1.01
+            low = df["low"] if "low" in df.columns else close * 0.99
+            pos = simulate_donchian_positions(
+                close, high, low,
+                entry_lookback=self.entry_lookback,
+                exit_lookback=self.exit_lookback,
+            )
+            if len(pos) and bool(pos["in_position"].iloc[-1]):
+                candidates.append(symbol)
+
+        return _trend_portfolio_weights(candidates, self.per_name_cap)
+
+
+class MomentumChandelierStrategy(BaseStrategy):
+    """动量吊灯跟随 — 12 月符号管方向，吊灯线管离场
+
+    「符号」= 12 个月收益的正负号（方向）；「吊灯」= 最高价 − k×ATR 的移动止损线。
+    - 符号为正 → 允许持有；符号翻负 → 离场
+    - 持有期间跌破吊灯线或硬止损 −8% → 离场并冷却
+    - 符号负责「要不要持有」，吊灯负责「何时落袋」
+
+    比纯 TSMOM 多一层月末吊灯保护，比 CTA 突破少一层通道信号。
+    用月频评估止损：12 月趋势不应被周内噪音打出去（周频实测显著更差）。
+    """
+
+    name = "动量吊灯跟随"
+    description = "12 月收益符号为正才持有 + 月末吊灯线止损，符号管方向、吊灯管离场"
+    category = "趋势跟随"
+    rebalance_freq = "M"
+
+    lookback_period: int = TSMOM_LOOKBACK
+    per_name_cap: float = 0.20
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 800))
+        if not ohlcv:
+            return {}
+
+        candidates = []
+        for symbol, df in ohlcv.items():
+            if len(df) <= self.lookback_period + 10:
+                continue
+            close = df["close"]
+            high = df["high"] if "high" in df.columns else close * 1.01
+            low = df["low"] if "low" in df.columns else close * 0.99
+            pos = simulate_tsmom_chandelier_positions(
+                close, high, low,
+                lookback=self.lookback_period,
+                base_k=CHAN_K_SLOW,
+                cooldown_days=COOLDOWN_SLOW,
+            )
+            if len(pos) and bool(pos["in_position"].iloc[-1]):
+                candidates.append(symbol)
+
+        return _trend_portfolio_weights(candidates, self.per_name_cap)
+
+
 class RiskParityStrategy(BaseStrategy):
     """风险平价策略
 
@@ -212,67 +367,6 @@ class RiskParityStrategy(BaseStrategy):
         # 归一化，保留 5% 现金
         investable = 0.95
         weights = {s: (iv / total_inv_vol) * investable for s, iv in inv_vol.items()}
-
-        return weights
-
-
-class MeanReversionStrategy(BaseStrategy):
-    """均值回归策略
-
-    RSI 超卖时买入，超买时卖出。
-    与动量/趋势策略天然对冲。
-    """
-
-    name = "均值回归策略"
-    description = "RSI 超卖抄底，超买离场，与动量策略对冲"
-    category = "均值回归"
-
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        sliced = _slice_data(all_data, current_date, lookback_days)
-
-        # 计算各资产 RSI
-        rsi_map = {}
-        for symbol, close in sliced.items():
-            if len(close) < 20:
-                continue
-            rsi_series = calc_rsi(close, period=14)
-            if not rsi_series.empty:
-                rsi_value = rsi_series.iloc[-1]
-                if not np.isnan(rsi_value):
-                    rsi_map[symbol] = rsi_value
-
-        if not rsi_map:
-            return {}
-
-        # RSI 越低权重越高（超卖反弹机会）
-        # RSI < 30: 高权重, 30-50: 正常权重, 50-70: 低权重, >70: 零权重
-        weights = {}
-        for symbol, rsi in rsi_map.items():
-            if rsi >= 70:
-                # 超买，不持有
-                continue
-            elif rsi >= 50:
-                # 偏高，低权重
-                weights[symbol] = 0.3
-            elif rsi >= 30:
-                # 正常，标准权重
-                weights[symbol] = 0.7
-            else:
-                # 超卖，高权重
-                weights[symbol] = 1.0
-
-        if not weights:
-            return {}
-
-        # 归一化，保留 5% 现金
-        total = sum(weights.values())
-        investable = 0.95
-        weights = {s: (w / total) * investable for s, w in weights.items()}
 
         return weights
 
@@ -571,7 +665,7 @@ def _slice_ohlcv(
     current_date: pd.Timestamp,
     lookback_days: int = 2000,
 ) -> Dict[str, pd.DataFrame]:
-    """截取截至 current_date 的 OHLCV，保留完整回看窗口（温度需要长历史）"""
+    """截取截至 current_date 的 OHLCV，保留完整回看窗口（长回看指标需要足够历史）"""
     result = {}
     for symbol, df in all_data.items():
         if df.empty:
@@ -580,173 +674,6 @@ def _slice_ohlcv(
         if len(window) > 0:
             result[symbol] = window.reset_index(drop=True)
     return result
-
-
-class TemperatureTrendStrategy(BaseStrategy):
-    """温度趋势轮动策略
-
-    七档温度（冻-寒-凉-平-温-热-沸）状态机 + 吊灯止损 + 组合回撤红线：
-    - 热区开仓（温转热），温区持有减半，温转平离场
-    - 吊灯止损跟随峰值，浮盈后收紧，硬止损 -8%
-    - top 5 按温度排序，单票上限 20%，组合 DD -9%/-14% 减半/清仓
-
-    无实例状态，每次调用从价格历史完整重放，保证可复现。
-    """
-
-    name = "温度趋势轮动"
-    description = "七档温度状态机择时 + 吊灯移动止损拿主升浪 + 回撤红线控尾部，单票 20% 上限"
-    category = "趋势动量"
-    rebalance_freq = "W"
-
-    top_n: int = 5
-    per_name_cap: float = 0.20
-
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
-        if not ohlcv:
-            return {}
-
-        temps = {}
-        sizes = {}
-        closes = {}
-
-        for symbol, df in ohlcv.items():
-            close = df["close"]
-            high = df["high"] if "high" in df.columns else close * 1.01
-            low = df["low"] if "low" in df.columns else close * 0.99
-            if len(close) < 126:
-                continue
-            temp = calc_temperature(close, high, low)
-            pos = simulate_symbol_positions(close, high, low, temp)
-            temps[symbol] = temp
-            sizes[symbol] = pos["size"]
-            closes[symbol] = close
-
-        if not sizes:
-            return {}
-
-        # 当日候选：size>0 按温度排序取 top_n
-        candidates = []
-        for symbol, size_series in sizes.items():
-            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
-            if size <= 0:
-                continue
-            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
-            if np.isnan(t_val):
-                continue
-            candidates.append((symbol, t_val, size))
-
-        if not candidates:
-            return {}
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        selected = candidates[: self.top_n]
-
-        raw_weights = {}
-        for symbol, _, size in selected:
-            w = min(self.per_name_cap, size / 0.85 * self.per_name_cap)
-            if w > 0:
-                raw_weights[symbol] = w
-
-        if not raw_weights:
-            return {}
-
-        # 组合回撤红线：用基础权重路径模拟模型净值（未计手续费，留缓冲）
-        current_dd, _ = simulate_portfolio_drawdown(
-            sizes, closes, per_name_cap=self.per_name_cap
-        )
-        return apply_drawdown_overlay(
-            raw_weights, current_dd,
-            halve_threshold=COMPOSITE_DD_HALVE,
-            flatten_threshold=COMPOSITE_DD_FLATTEN,
-        )
-
-
-class TemperatureTrendV2Strategy(TemperatureTrendStrategy):
-    """温度趋势轮动 V2 — 修「温转热踩空」
-
-    V1 问题：止损离场后状态回落到温，无法回补，错过后续主升浪。
-    V2 改动：
-    - 上位温区（T≥65）允许以 0.40 热度进场（捕捉温→热的过程）
-    - 冷却期延长到 10 日，降低来回打脸的换手成本
-    信号/风控骨架与 V1 相同，便于对照。
-    """
-
-    name = "温度趋势轮动V2"
-    description = "V1 + 上位温区可回补（T≥65 进场）+ 冷却 10 日降换手，修转热踩空"
-    warm_entry_t: float = 65.0
-
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
-        if not ohlcv:
-            return {}
-
-        temps = {}
-        sizes = {}
-        closes = {}
-
-        for symbol, df in ohlcv.items():
-            close = df["close"]
-            high = df["high"] if "high" in df.columns else close * 1.01
-            low = df["low"] if "low" in df.columns else close * 0.99
-            if len(close) < 126:
-                continue
-            temp = calc_temperature(close, high, low)
-            pos = simulate_symbol_positions(
-                close, high, low, temp,
-                cooldown_days=10,
-                warm_entry_t=self.warm_entry_t,
-            )
-            temps[symbol] = temp
-            sizes[symbol] = pos["size"]
-            closes[symbol] = close
-
-        if not sizes:
-            return {}
-
-        candidates = []
-        for symbol, size_series in sizes.items():
-            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
-            if size <= 0:
-                continue
-            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
-            if np.isnan(t_val):
-                continue
-            candidates.append((symbol, t_val, size))
-
-        if not candidates:
-            return {}
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        selected = candidates[: self.top_n]
-
-        raw_weights = {}
-        for symbol, _, size in selected:
-            w = min(self.per_name_cap, size / 0.85 * self.per_name_cap)
-            if w > 0:
-                raw_weights[symbol] = w
-
-        if not raw_weights:
-            return {}
-
-        current_dd, _ = simulate_portfolio_drawdown(
-            sizes, closes, per_name_cap=self.per_name_cap
-        )
-        return apply_drawdown_overlay(
-            raw_weights, current_dd,
-            halve_threshold=COMPOSITE_DD_HALVE,
-            flatten_threshold=COMPOSITE_DD_FLATTEN,
-        )
 
 
 class DualMomentumKellyStrategy(DualMomentumStrategy):
@@ -867,95 +794,6 @@ class MomentumVolKellyStrategy(MomentumVolFilterStrategy):
                 weights = {s: w * scale for s, w in weights.items()}
 
         return weights
-
-
-class TemperatureKellyStrategy(BaseStrategy):
-    """温度轮动 × 凯利连续配比
-
-    温度 T 作为 μ̂ 代理：T=50 → 0，T=80 → +0.45×15% 预期优势。
-    开仓/持有由温度状态机决定，分仓用 1/4 凯利 μ̂/σ² 替代热度档位。
-    """
-
-    name = "温度轮动×凯利"
-    description = "温度 T 作 μ̂ 连续凯利分仓，状态机择时 + 吊灯止损 + 回撤红线"
-    category = "趋势动量"
-    rebalance_freq = "W"
-
-    top_n: int = 5
-    kelly_k: float = 0.25
-    max_weight: float = 0.20
-    vol_window: int = 60
-    target_annual: float = 0.15
-
-    def generate_weights(
-        self,
-        current_date: pd.Timestamp,
-        all_data: Dict[str, pd.DataFrame],
-        lookback_days: int = 252,
-    ) -> Dict[str, float]:
-        ohlcv = _slice_ohlcv(all_data, current_date, lookback_days=max(lookback_days, 1000))
-        if not ohlcv:
-            return {}
-
-        temps = {}
-        sizes = {}
-        closes = {}
-        vols = {}
-
-        for symbol, df in ohlcv.items():
-            close = df["close"]
-            high = df["high"] if "high" in df.columns else close * 1.01
-            low = df["low"] if "low" in df.columns else close * 0.99
-            if len(close) < 126:
-                continue
-            temp = calc_temperature(close, high, low)
-            pos = simulate_symbol_positions(close, high, low, temp)
-            temps[symbol] = temp
-            sizes[symbol] = pos["size"]
-            closes[symbol] = close
-            v = calc_volatility(close, window=self.vol_window)
-            if v and v > 0:
-                vols[symbol] = v / 100.0
-
-        if not sizes:
-            return {}
-
-        candidates = []
-        for symbol, size_series in sizes.items():
-            size = float(size_series.iloc[-1]) if len(size_series) else 0.0
-            if size <= 0:
-                continue
-            t_val = float(temps[symbol].iloc[-1]) if len(temps[symbol]) else 0.0
-            if np.isnan(t_val) or symbol not in vols:
-                continue
-            candidates.append((symbol, t_val, size))
-
-        if not candidates:
-            return {}
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        selected = candidates[: self.top_n]
-
-        mu_map = {s: mu_from_temperature(t, self.target_annual) for s, t, _ in selected}
-        vol_map = {s: vols[s] for s, _, _ in selected}
-
-        raw_weights = kelly_weights(
-            mu_map, vol_map,
-            k=self.kelly_k,
-            max_weight=self.max_weight,
-        )
-
-        if not raw_weights:
-            return {}
-
-        current_dd, _ = simulate_portfolio_drawdown(
-            sizes, closes, per_name_cap=self.max_weight
-        )
-        return apply_drawdown_overlay(
-            raw_weights, current_dd,
-            halve_threshold=COMPOSITE_DD_HALVE,
-            flatten_threshold=COMPOSITE_DD_FLATTEN,
-        )
 
 
 class _AntifragileBase:
@@ -1277,7 +1115,7 @@ _REGIME_STRATEGY_MAP = {
     "风险偏好": "双动量3个月",       # 趋势向上时动量收割
     "避险": "风险平价",             # 波动率反比配置，自动降仓
     "危机": "反脆弱激进版",          # 尾部对冲暴跌时凸性收益
-    "滞胀担忧": "均值回归",          # 震荡市 RSI 超卖反弹
+    "滞胀担忧": "低相关性组合",      # 分散化扛滞胀，不单押方向
     "震荡": "低相关性组合",          # 最大分散化降低来回割
     "中性": "双动量",               # 绝对动量过滤
 }
@@ -1325,7 +1163,6 @@ class RegimeSwitchingStrategy(BaseStrategy):
                 "双动量6个月": DualMomentum6MStrategy,
                 "风险平价": RiskParityStrategy,
                 "反脆弱激进版": AntifragileAggressiveStrategy,
-                "均值回归": MeanReversionStrategy,
                 "低相关性组合": MinCorrelationStrategy,
             }
             cls = strategy_map.get(name)

@@ -91,14 +91,3 @@ def mu_from_momentum(momentum_pct: float) -> float:
         return 0.0
     clipped = max(-0.30, min(0.30, momentum_pct / 100.0))
     return clipped * 0.5
-
-
-def mu_from_temperature(temp: float, target_annual: float = 0.15) -> float:
-    """把温度 T∈[0,100] 转成凯利用的 μ̂（小数）
-
-    T=50（平）→ 0；T=80（热）→ +0.45 倍目标；T=20（寒）→ 负（不下注）
-    """
-    if temp is None or (isinstance(temp, float) and np.isnan(temp)):
-        return 0.0
-    # (T-50)/50 ∈ [-1, 1]，乘目标年化收益
-    return (temp - 50.0) / 50.0 * target_annual

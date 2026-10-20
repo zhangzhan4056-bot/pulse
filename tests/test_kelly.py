@@ -6,7 +6,6 @@ from core.strategy.kelly import (
     kelly_weight,
     kelly_weights,
     mu_from_momentum,
-    mu_from_temperature,
 )
 
 
@@ -57,12 +56,6 @@ class TestMuHelpers(unittest.TestCase):
         self.assertAlmostEqual(mu_from_momentum(-20), -0.10)
         self.assertAlmostEqual(mu_from_momentum(100), 0.15)  # clip 30% → 0.5*0.30
         self.assertEqual(mu_from_momentum(None), 0.0)
-
-    def test_temperature_mu(self):
-        self.assertAlmostEqual(mu_from_temperature(50), 0.0)
-        self.assertAlmostEqual(mu_from_temperature(80), 0.09)   # (30/50)*0.15
-        self.assertAlmostEqual(mu_from_temperature(20), -0.09)
-        self.assertEqual(mu_from_temperature(float("nan")), 0.0)
 
 
 if __name__ == "__main__":

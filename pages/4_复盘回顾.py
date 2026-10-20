@@ -30,7 +30,6 @@ from core.backtest.engine import BacktestEngine, BacktestResult
 from core.strategy.strategies import (
     TrendFollowingStrategy,
     RiskParityStrategy,
-    MeanReversionStrategy,
     MinCorrelationStrategy,
     DualMomentumStrategy,
     DualMomentum6MStrategy,
@@ -327,7 +326,6 @@ def _get_all_strategies():
     return [
         TrendFollowingStrategy(),
         RiskParityStrategy(),
-        MeanReversionStrategy(),
         MinCorrelationStrategy(),
         DualMomentumStrategy(),
         DualMomentum6MStrategy(),
@@ -1357,19 +1355,6 @@ def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[Bac
                     "reason": "纯均线策略在震荡市频繁假突破，加入动量确认可减少无效交易",
                 })
 
-        # ---- 均值回归策略 ----
-        if "均值回归" in name:
-            if max_dd < -20:
-                suggestions.append({
-                    "strategy": name,
-                    "priority": "高",
-                    "summary": "最大回撤过大，抄底阈值过于激进",
-                    "problem": f"最大回撤 {max_dd:.1f}%，RSI<30 就全仓买入风险过高",
-                    "current": "RSI<30: 全仓, 30-50: 70%, 50-70: 30%, >=70: 不持仓",
-                    "suggestion": "RSI<30 改为 80% 仓位，加入回撤过滤（资产回撤 > -25% 才抄底）",
-                    "reason": "深度下跌时 RSI 可能长期低于 30，全仓抄底会承受巨大回撤",
-                })
-
         # ---- 风险平价策略 ----
         if "风险平价" in name and "尾部" not in name:
             if sharpe < 0.2:
@@ -1529,7 +1514,7 @@ def render_market_recommendation(dm: DataManager):
             sharpe_text = ""
             # 从 strategies.py 获取策略描述
             strategy_cls = None
-            for cls in [TrendFollowingStrategy, RiskParityStrategy, MeanReversionStrategy,
+            for cls in [TrendFollowingStrategy, RiskParityStrategy,
                         MinCorrelationStrategy, DualMomentumStrategy, MomentumVolFilterStrategy,
                         DrawdownControlStrategy, AntifragileStrategy, TailRiskParityStrategy,
                         DrawdownConstraintStrategy]:
