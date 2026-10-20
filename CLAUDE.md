@@ -11,6 +11,7 @@ A股 + 美股投资监控与决策辅助系统。
 ```
 market-pulse/
 ├── 0_主页.py               # Streamlit 主入口（首页/仪表盘）
+├── app.py                  # Cloud 入口兼容层（Main file path 仍是 app.py，exec 0_主页.py）
 ├── strategies_guide.html   # 策略学习文档（自包含 HTML，SVG 图表）
 ├── 策略研究学习手册.html     # 策略研究入门手册（8章，13策略，12指标）
 ├── 反脆弱策略学习指南.md     # 反脆弱策略深度学习指南
@@ -180,6 +181,7 @@ python scripts/daily_sync.py
 
 ## 已知陷阱
 
+- **不要删根目录 `app.py`**：Streamlit Cloud 的 Main file path 仍是 `app.py`，删掉会整站 "Oh no, error running app"。`app.py` 只是 exec `0_主页.py` 的兼容层。Python 里 `app/` 包优先于同名模块，`from app.components...` 不受 `app.py` 影响
 - **温度公式不要用滚动百分位做主维度**：成熟趋势会被自身历史排名「降温」（2021 牛市误判平/寒）。四维用固定阈值映射，滚动百分位只用于波动率泡沫检测
 - **温度策略周频换手是收益杀手**：314 次周频再平衡 ≈ 15%+ 成本拖累。V1/V2/凯利版都是控回撤有效但绝对收益为负，参数未扫完前不要上真钱
 - **吊灯止损 k 要匹配持仓周期**：k=3 对 2 个月-3 年持有太紧（3% 回撤就打出去），已改 k=4.0（浮盈 15% 后 2.5，沸 3.0），ATR(20)
