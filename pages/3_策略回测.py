@@ -14,7 +14,7 @@ import pandas as pd
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data import DataManager, STRATEGY_UNIVERSE
 from core.strategy.strategies import (
     TrendFollowingStrategy,
     TimeSeriesMomentumStrategy,
@@ -86,7 +86,7 @@ def load_all_assets(dm: DataManager, start_date: str, end_date: str) -> Dict[str
     """加载全部资产数据"""
 
 
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     data = {}
 
     for symbol in all_symbols:

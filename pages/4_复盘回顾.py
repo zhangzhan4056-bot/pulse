@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data import DataManager, STRATEGY_UNIVERSE
 from core.scanner.scorer import (
     score_all_assets,
     AssetScore,
@@ -102,7 +102,7 @@ def _load_all_assets(dm: DataManager, days: int = 365) -> Dict[str, pd.DataFrame
     """加载全部资产数据"""
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     data = {}
     for symbol in all_symbols:
         df = dm.load(symbol, start_date, end_date)
@@ -198,7 +198,7 @@ def backtest_opportunities(
         List[Dict] 每个采样点的结果:
         {date, regime, composite, scores: [{symbol, name, opportunity, forward_return, correct}]}
     """
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
 
     # 加载全部数据（一次性）
     end_date = datetime.now()
@@ -355,7 +355,7 @@ def backtest_strategy_rankings(
         - full_results: List[BacktestResult] 全量回测结果（用于 1 年表现总览）
         - sample_results: List[Dict] 每个采样点的排名评估
     """
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
 
     # 加载数据（多取 400 天给策略回望）
     end_date = datetime.now()
@@ -947,7 +947,7 @@ def render_opportunity_review(results: List[Dict]):
 
     # ---- 按资产细分 ----
     with st.expander("  按资产细分", expanded=False):
-        all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+        all_symbols = STRATEGY_UNIVERSE
         asset_stats = {}
         for r in results:
             for s in r["scores"]:
@@ -1466,7 +1466,7 @@ def render_market_recommendation(dm: DataManager):
     end_date = datetime.now()
     data_start = (end_date - timedelta(days=400)).strftime("%Y-%m-%d")
     data_end = end_date.strftime("%Y-%m-%d")
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     data = {}
     for symbol in all_symbols:
         df = dm.load(symbol, data_start, data_end)

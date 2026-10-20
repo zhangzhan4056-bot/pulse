@@ -235,6 +235,18 @@ class BacktestEngine:
             except Exception:
                 new_weights = current_weights
 
+            # 闲钱进短债：未配满仓位买入 CASH_PROXY，避免 0% 闲置拖累
+            # SHY 是现金代理，不受单票 20% 红线约束（等价于持有短债现金）
+            from core.data.config import CASH_PROXY
+            cash_proxy = CASH_PROXY
+            if cash_proxy in all_data:
+                total_w = sum(new_weights.values()) if new_weights else 0.0
+                if total_w < 1.0 - 1e-9:
+                    new_weights = dict(new_weights) if new_weights else {}
+                    new_weights[cash_proxy] = new_weights.get(cash_proxy, 0.0) + (1.0 - total_w)
+                    if new_weights[cash_proxy] <= 1e-9:
+                        del new_weights[cash_proxy]
+
             # 记录权重
             weight_record = {"date": rebal_date}
             weight_record.update(new_weights)

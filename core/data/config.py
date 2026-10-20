@@ -49,8 +49,13 @@ ASSETS = {
         "SPY": "标普500 ETF",
         "QQQ": "纳斯达克100 ETF",
     },
+    "us_international": {
+        "EFA": "MSCI发达市场 ETF",
+        "EEM": "MSCI新兴市场 ETF",
+    },
     "us_bond": {
         "TLT": "20年期国债 ETF（替代 TNX）",
+        "SHY": "1-3年短债 ETF（现金代理）",
     },
     "us_oil": {
         "CL": "WTI原油期货",
@@ -84,10 +89,10 @@ ASSETS = {
     },
 }
 
-# 所有美股 symbol
+# 所有美股 symbol（含国际宽基与短债）
 US_SYMBOLS = {
     sym: desc
-    for category in ["us_equity", "us_bond", "us_oil", "us_commodity"]
+    for category in ["us_equity", "us_international", "us_bond", "us_oil", "us_commodity"]
     for sym, desc in ASSETS[category].items()
 }
 
@@ -99,6 +104,17 @@ GLOBAL_SYMBOLS = ASSETS["global_equity"]
 
 # 美股板块 ETF symbol
 US_SECTORS_SYMBOLS = ASSETS["us_sectors"]
+
+# 策略可交易宇宙 = 大类 + 国际 + 板块（所有策略共用）
+STRATEGY_UNIVERSE = {
+    **US_SYMBOLS,
+    **CN_SYMBOLS,
+    **GLOBAL_SYMBOLS,
+    **US_SECTORS_SYMBOLS,
+}
+
+# 现金代理：策略未配满的仓位买入短债，不再闲置 0% 收益
+CASH_PROXY = "SHY"
 
 # 关注持仓（用于风险预警的特别监控）
 WATCHED_HOLDINGS = {

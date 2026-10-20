@@ -72,8 +72,9 @@ market-pulse/
 ## 数据源
 
 - **美股/ETF**: Twelve Data API (免费计划，每分钟 8 次限制)
-  - 大类资产：SPY (标普500), QQQ (纳指100), TLT (20年国债), CL (WTI原油), GLD (黄金ETF)
+  - 大类资产：SPY (标普500), QQQ (纳指100), EFA (发达市场), EEM (新兴市场), TLT (20年国债), SHY (1-3年短债/现金代理), CL (WTI原油), GLD (黄金ETF)
   - 板块 ETF：XLK(科技), XLF(金融), XLE(能源), XLV(医疗), XLI(工业), XLP(消费必需), XLU(公用事业), XLRE(房地产), XLB(材料), XLC(通信)
+  - 策略宇宙 `STRATEGY_UNIVERSE`（23 标的）= 大类+国际+板块，所有策略共用；未配满仓位自动买入 `CASH_PROXY=SHY`
   - API key: 环境变量 `TWELVEDATA_API_KEY` 或 `~/.local/bin/finquote.conf`
 - **A股指数**: AkShare 新浪源（东方财富被墙）
   - 399006 (创业板指), 000688 (科创50), 000300 (沪深300)
@@ -115,7 +116,7 @@ market-pulse/
 - [x] 回测引擎 (core/backtest/engine.py) — 月度再平衡，按日计算组合收益
 - [x] 策略类 (core/strategy/strategies.py) — 19 种策略，分四类：趋势跟随（TSMOM/CTA突破/动量吊灯/均线基线）、趋势动量（双动量系列+凯利）、风险配置、反脆弱
 - [x] 趋势跟随框架 (core/strategy/trend_follow.py) — TSMOM 12月符号 / Donchian 55-20 突破 / 吊灯移动止损，无状态重放，与双动量（横截面选强）角色分工
-- [x] 分数凯利配比 (core/strategy/kelly.py) — w=clip(k·μ̂/σ², 0, 20%)，1/4 凯利默认，单票硬顶+总仓位压缩
+- [x] 分数凯利配比 (core/strategy/kelly.py) — w=clip(k·μ̂/σ², 0, 20%)，策略用 k=0.5（1/2 凯利），单票硬顶+总仓位压缩；闲钱由引擎买入 SHY
 - [x] P3 策略回测页面 (pages/3_策略回测.py) — 策略对比与历史回测
 - [x] P4 复盘回顾页面 (pages/4_复盘回顾.py) — 双轨复盘：市场策略推荐+机会扫描分类准确性评估+策略推荐跑赢率评估，含评分区间命中率分析和参数优化建议
 - [x] P5 政治信号跟踪页面 (pages/5_政治信号.py) — 特朗普家族信号链跟踪：持仓变动/公开喊话/催化剂事件，信号链视图+全部时间线+走势图叠加。数据源：SEC EDGAR + White House PTR + Google News RSS + 白宫RSS，增量更新
@@ -186,6 +187,8 @@ python scripts/daily_sync.py
 - **周频换手是收益杀手**：高频再平衡的成本拖累可达 15%+。趋势类信号（12M 符号/吊灯）必须月频评估；CTA 突破换手本身低，周频才可接受
 - **吊灯止损 k 要匹配持仓周期**：k=3 对 2 个月-3 年持有偏紧，容易被 3% 级别回踩打出去。长持用更宽的 k（趋势动量吊灯用 k=6）
 - **凯利在长仓无杠杆下经常 >100%**：必须 clip 单票 20% + 总仓位 1.0，真正生效的是相对配比不是绝对仓位
+- **等权双动量 top3 = 33%/票，破 20% 红线**：要守红线用「双动量×凯利」（max_weight=0.20）；等权版回测收益更高但单票超限，不能直接上实盘
+- **扩宇宙的主要收益来源是「填满 5 个 20% 名额」**：10 标的时常只有 2-3 个过绝对动量，20% 顶格下最多 40-60% 仓位。23 标的后平均仓位接近满仓，2021 从 +0% 修到 +5%
 - **单策略的组合 DD 重放用基础权重路径**：generate_weights 每次独立重放历史，禁止把 entry/peak/stop 挂在 self 上（引擎 except 时会失步）
 
 - **AkShare 用新浪源**：东方财富源（`*_em` 函数）被墙，一律用 `stock_zh_index_daily`、`index_global_hist_sina`

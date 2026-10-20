@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data import DataManager, STRATEGY_UNIVERSE
 from core.scanner.scorer import score_all_assets
 from core.scanner.history import ScanHistory
 from core.scanner.renderer import (
@@ -61,7 +61,7 @@ def load_all_assets(dm: DataManager, days: int = 365) -> Dict[str, pd.DataFrame]
     """加载全部资产数据"""
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     data = {}
     for symbol in all_symbols:
         df = dm.load(symbol, start_date, end_date)
@@ -72,7 +72,7 @@ def load_all_assets(dm: DataManager, days: int = 365) -> Dict[str, pd.DataFrame]
 
 def _render_market_context(data: Dict[str, pd.DataFrame]):
     """市场概况 — 顶部上下文信息"""
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     # 市场体制
     spy_close = data.get("SPY", pd.DataFrame()).get("close", pd.Series())
     tlt_close = data.get("TLT", pd.DataFrame()).get("close", pd.Series())
@@ -156,7 +156,7 @@ def main():
         st.error("暂无数据，请先在「市场全景」页面刷新数据")
         return
 
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
 
     # ============================================================
     # 市场概况（顶部上下文）

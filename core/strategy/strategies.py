@@ -31,11 +31,11 @@ from core.strategy.trend_follow import (
     simulate_donchian_positions,
     inverse_vol_weights,
 )
-from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data.config import STRATEGY_UNIVERSE, CASH_PROXY
 
 
-# 所有可配置资产
-ALL_SYMBOLS = list(US_SYMBOLS.keys()) + list(CN_SYMBOLS.keys()) + list(GLOBAL_SYMBOLS.keys())
+# 所有可配置资产（大类 + 国际 + 板块）
+ALL_SYMBOLS = list(STRATEGY_UNIVERSE.keys())
 
 
 # 策略分类定义
@@ -680,14 +680,14 @@ class DualMomentumKellyStrategy(DualMomentumStrategy):
     """双动量 × 分数凯利配比
 
     信号与双动量完全一致（12M 绝对动量过滤 + 相对动量选强）。
-    分仓从等权 33% 改为 1/4 凯利：w = clip(0.25·μ̂/σ², 0, 20%)。
+    分仓从等权 33% 改为 1/2 凯利：w = clip(0.50·μ̂/σ², 0, 20%)。
     μ̂ 用 12M 动量温和压缩，σ̂ 用 60 日已实现波动率。
     """
 
     name = "双动量×凯利"
-    description = "双动量信号不变，分仓改为 1/4 凯利 μ̂/σ² + 单票 20% 硬顶"
+    description = "双动量信号不变，分仓改为 1/2 凯利 μ̂/σ² + 单票 20% 硬顶"
     top_n: int = 5
-    kelly_k: float = 0.25
+    kelly_k: float = 0.50
     max_weight: float = 0.20
     vol_window: int = 60
 
@@ -739,9 +739,9 @@ class MomentumVolKellyStrategy(MomentumVolFilterStrategy):
     """
 
     name = "动量波动率×凯利"
-    description = "动量选股不变，分仓改为 1/4 凯利 μ̂/σ²，波动率上限兜底"
+    description = "动量选股不变，分仓改为 1/2 凯利 μ̂/σ²，波动率上限兜底"
     top_n: int = 5
-    kelly_k: float = 0.25
+    kelly_k: float = 0.50
     max_weight: float = 0.20
     vol_window: int = 60
 

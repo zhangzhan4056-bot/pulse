@@ -28,7 +28,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
+from core.data.config import STRATEGY_UNIVERSE, US_SECTORS_SYMBOLS
 from core.data.manager import DataManager
 from core.data.macro_fetcher import MacroFetcher
 from core.data.macro_storage import MacroStorage
@@ -99,7 +99,7 @@ def run_scan(dm: DataManager) -> dict:
     # 加载全部资产数据
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     data = {}
     for symbol in all_symbols:
         df = dm.load(symbol, start_date, end_date)

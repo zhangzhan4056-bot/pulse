@@ -29,7 +29,7 @@ from core.strategy.indicators import (
     calc_volatility,
     calc_returns,
 )
-from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
+from core.data.config import STRATEGY_UNIVERSE
 
 
 # 机会类型
@@ -77,7 +77,7 @@ def score_all_assets(data: Dict[str, pd.DataFrame]) -> List[AssetScore]:
     Returns:
         AssetScore 列表，按综合机会排序
     """
-    all_symbols = {**US_SYMBOLS, **CN_SYMBOLS, **GLOBAL_SYMBOLS}
+    all_symbols = STRATEGY_UNIVERSE
     scores = []
 
     for symbol, df in data.items():

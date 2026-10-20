@@ -1,6 +1,14 @@
 """数据获取层 - 大类资产数据获取与存储"""
 
-from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
+from .config import (
+    ASSETS,
+    US_SYMBOLS,
+    CN_SYMBOLS,
+    GLOBAL_SYMBOLS,
+    US_SECTORS_SYMBOLS,
+    STRATEGY_UNIVERSE,
+    CASH_PROXY,
+)
 from .manager import DataManager
 from .storage import DataStorage
 from .signal_storage import PoliticalSignalStorage
@@ -12,6 +20,8 @@ __all__ = [
     "CN_SYMBOLS",
     "GLOBAL_SYMBOLS",
     "US_SECTORS_SYMBOLS",
+    "STRATEGY_UNIVERSE",
+    "CASH_PROXY",
     "DataManager",
     "DataStorage",
     "PoliticalSignalStorage",
