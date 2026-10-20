@@ -14,7 +14,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, STRATEGY_UNIVERSE
+from core.data.config import STRATEGY_UNIVERSE
+from core.data.manager import DataManager
 from core.scanner.scorer import score_all_assets
 from core.scanner.history import ScanHistory
 from core.scanner.renderer import (

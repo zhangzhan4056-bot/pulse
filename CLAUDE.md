@@ -184,6 +184,7 @@ python scripts/daily_sync.py
 
 - **12 月动量的吊灯止损必须月频评估**：周频会被正常回撤反复打出去（实测 +4% vs 月频 +64%）。12M 趋势要扛 10-15% 回踩，周内噪音不该触发离场。CTA 突破换手低，周频没问题
 - **不要删根目录 `app.py`**：Streamlit Cloud 的 Main file path 仍是 `app.py`，删掉会整站 "Oh no, error running app"。`app.py` 只是 exec `0_主页.py` 的兼容层。Python 里 `app/` 包优先于同名模块，`from app.components...` 不受 `app.py` 影响
+- **`core/data/__init__.py` 不许同步 import manager/signal_fetcher**：重依赖（akshare）一挂，`from core.data import STRATEGY_UNIVERSE` 整包 ImportError，页面报错行号会指到无关的 import。符号常量只从 `config` 导出；DataManager/抓取器用 PEP 562 延迟加载；`manager.__init__` 内再 import 抓取器。页面用 `from core.data.config import STRATEGY_UNIVERSE`
 - **周频换手是收益杀手**：高频再平衡的成本拖累可达 15%+。趋势类信号（12M 符号/吊灯）必须月频评估；CTA 突破换手本身低，周频才可接受
 - **吊灯止损 k 要匹配持仓周期**：k=3 对 2 个月-3 年持有偏紧，容易被 3% 级别回踩打出去。长持用更宽的 k（趋势动量吊灯用 k=6）
 - **凯利在长仓无杠杆下经常 >100%**：必须 clip 单票 20% + 总仓位 1.0，真正生效的是相对配比不是绝对仓位

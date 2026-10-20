@@ -10,8 +10,6 @@ from typing import Dict, Optional
 import pandas as pd
 
 from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
-from .twelvedata import TwelveDataFetcher
-from .akshare import AkShareFetcher
 from .storage import DataStorage, DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -24,6 +22,10 @@ class DataManager:
     """数据管理器 - 协调所有数据源"""
 
     def __init__(self):
+        # 抓取器延迟导入：import manager 本身不应依赖 akshare 是否可用
+        from .twelvedata import TwelveDataFetcher
+        from .akshare import AkShareFetcher
+
         self._bootstrap_if_needed()
         self.twelvedata = TwelveDataFetcher()
         self.akshare = AkShareFetcher()

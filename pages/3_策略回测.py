@@ -14,7 +14,8 @@ import pandas as pd
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data import DataManager, STRATEGY_UNIVERSE
+from core.data.config import STRATEGY_UNIVERSE
+from core.data.manager import DataManager
 from core.strategy.strategies import (
     TrendFollowingStrategy,
     TimeSeriesMomentumStrategy,

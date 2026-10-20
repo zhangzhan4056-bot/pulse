@@ -3,4 +3,5 @@ plotly>=5.18.0
 pandas>=2.0.0
 numpy>=1.24.0
 requests>=2.31.0
-akshare>=1.12.0
+# akshare 新版本在 Streamlit Cloud 偶发 import 失败；钉在本地验证过的版本
+akshare==1.18.58
