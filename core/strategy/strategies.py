@@ -690,6 +690,8 @@ class DualMomentumKellyStrategy(DualMomentumStrategy):
     kelly_k: float = 0.50
     max_weight: float = 0.20
     vol_window: int = 60
+    # 绝对动量门槛（百分点）。0=只要正收益；8=12M 涨幅>8% 才入选（挡假信号）
+    abs_momentum_min_pct: float = 0.0
     # 组合回撤自动化（A2）：月频 -15% 减半 / -20% 清仓。
     # 不要用 -10%/-15% 做自动刹车（收益 -25pp、回撤只少 2pp），也不要用「DD 收窄」当恢复条件（清仓后死锁）
     portfolio_dd_brake: bool = True
@@ -715,7 +717,10 @@ class DualMomentumKellyStrategy(DualMomentumStrategy):
         if not returns:
             return {}
 
-        positive = {s: r for s, r in returns.items() if r > 0}
+        positive = {
+            s: r for s, r in returns.items()
+            if r > self.abs_momentum_min_pct
+        }
         if not positive:
             return {}
 
@@ -736,6 +741,115 @@ class DualMomentumKellyStrategy(DualMomentumStrategy):
             k=self.kelly_k,
             max_weight=self.max_weight,
         )
+
+
+def _blend_weight_dicts(parts: list) -> Dict[str, float]:
+    """多腿权重拼盘：parts=[(scale, weights), ...]，scale 加总不必为 1（缺的进 SHY）"""
+    out: Dict[str, float] = {}
+    for scale, w in parts:
+        if not w:
+            continue
+        for s, x in w.items():
+            out[s] = out.get(s, 0.0) + float(scale) * float(x)
+    return {s: max(0.0, v) for s, v in out.items() if v > 1e-6}
+
+
+class DualMomentumKellyFilterStrategy(DualMomentumKellyStrategy):
+    """A：绝对动量门槛 8%
+
+    12M 涨幅不到 8% 不买，宁可持现金/SHY。挡掉「刚转正就回吐」的假动量。
+    回测（2019-2025 / A2）：+96.3% / −18.3% / 夏普 0.68（基准 +75.6% / 0.51）
+    """
+
+    name = "凯利·门槛8%"
+    description = "双动量×凯利 + 12M 动量>8% 才买，过滤假信号"
+    abs_momentum_min_pct: float = 8.0
+
+
+class SleeveBlendStrategy(BaseStrategy):
+    """双策略权重拼盘骨架：w = w_a·腿A + w_b·腿B
+
+    月频一次调仓。腿内各自 20% 顶，拼盘后再受总仓位约束。
+    """
+
+    name = "策略拼盘"
+    description = "主策略 + 卫星策略按固定比例拼盘"
+    category = "趋势动量"
+    rebalance_freq: str = "M"
+
+    sleeve_a_weight: float = 0.70
+    max_weight: float = 0.20
+
+    # 组合回撤 A2（与双动量×凯利一致）
+    portfolio_dd_brake: bool = True
+    dd_halve: float = -0.15
+    dd_flatten: float = -0.20
+    dd_restore: Optional[float] = None
+    dd_brake_intraday: bool = False
+
+    def _leg_a(self) -> BaseStrategy:
+        raise NotImplementedError
+
+    def _leg_b(self) -> BaseStrategy:
+        raise NotImplementedError
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        wa = self.sleeve_a_weight
+        wb = 1.0 - wa
+        return _blend_weight_dicts([
+            (wa, self._leg_a().generate_weights(current_date, all_data, lookback_days)),
+            (wb, self._leg_b().generate_weights(current_date, all_data, lookback_days)),
+        ])
+
+
+class DualMomentumKellyCTASleeveStrategy(SleeveBlendStrategy):
+    """D2：70% 凯利门槛8%进取 + 30% CTA 突破
+
+    CTA 与双动量日收益相关约 0.57，是真分散；代价是收益被 CTA 拖累。
+    回测拼盘：+88.1% / −15.1% / 夏普 0.80
+    """
+
+    name = "凯利·70/30 CTA"
+    description = "70% 凯利门槛8%（k=0.7）+ 30% CTA 突破，真分散降回撤"
+
+    def _leg_a(self) -> BaseStrategy:
+        leg = DualMomentumKellyFilterStrategy()
+        leg.kelly_k = 0.70
+        return leg
+
+    def _leg_b(self) -> BaseStrategy:
+        return CTABreakoutStrategy()
+
+
+class DualMomentumKellyHedgeSleeveStrategy(SleeveBlendStrategy):
+    """D4：70% 凯利门槛8%进取 + 30% 反脆弱
+
+    ⚠️ 反脆弱主仓也是双动量，日收益相关约 0.89，分散有限。
+    卫星腿带 5% OTM 月 put（成本按 30% 腿折算 0.09%/月）。
+    回测拼盘：+114% / −19.1% / 夏普 0.83 —— 收益高主要来自重复下注双动量，不是对冲。
+    """
+
+    name = "凯利·70/30 反脆弱"
+    description = "70% 凯利门槛8%（k=0.7）+ 30% 反脆弱（相关0.89，分散有限）"
+
+    # 对冲只作用在 30% 卫星腿：成本 0.3%/月 × 0.3 ≈ 0.09%/月
+    hedge_monthly_cost: float = 0.0009
+    hedge_otm_threshold: float = 0.05
+    hedge_vol: float = 0.20
+    use_bs_cost: bool = False
+
+    def _leg_a(self) -> BaseStrategy:
+        leg = DualMomentumKellyFilterStrategy()
+        leg.kelly_k = 0.70
+        return leg
+
+    def _leg_b(self) -> BaseStrategy:
+        return AntifragileStrategy()
 
 
 class MomentumVolKellyStrategy(MomentumVolFilterStrategy):

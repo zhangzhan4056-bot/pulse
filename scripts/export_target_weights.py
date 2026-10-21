@@ -1,5 +1,8 @@
 """月度目标权重导出 — 双账户路径 1（信号统一，执行拆分）
 
+生产策略：凯利·门槛8%（DualMomentumKellyFilterStrategy）。
+与飞书月报共用 build_monthly_allocation，月报只输出这一套方案。
+
 用法（每月第一个交易日收盘后）:
     python3 scripts/export_target_weights.py
 
@@ -18,25 +21,27 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.data.manager import DataManager
-from core.data.config import STRATEGY_UNIVERSE, CASH_PROXY
-from core.strategy.strategies import DualMomentumKellyStrategy
+from core.data.config import STRATEGY_UNIVERSE, CASH_PROXY, CN_SYMBOLS
+from core.strategy.strategies import DualMomentumKellyFilterStrategy
 from core.backtest.engine import BacktestEngine
 
 # 双账户拆分（路径 1）
-TIGER_SYMBOLS = [s for s in STRATEGY_UNIVERSE if s not in ("399006", "000688", "000300", "日经225", "KOSPI")]
-DOMESTIC_SYMBOLS = ["000300", "399006", "000688"]
-# 日韩无境内干净标的：在老虎用区域 ETF 替代
+# 境内腿 = 全部 A 股指数（含行业指数）；日韩在老虎用区域 ETF；其余进老虎
+DOMESTIC_SYMBOLS = list(CN_SYMBOLS.keys())
 TIGER_PROXY = {"日经225": "EWJ", "KOSPI": "EWY"}
 
 
-def main() -> None:
+def build_monthly_allocation(end: Optional[str] = None) -> dict:
+    """计算本月目标权重 + 近一年权重路径，供导出脚本和飞书月报共用。"""
     dm = DataManager()
-    end = datetime.now().strftime("%Y-%m-%d")
-    strategy = DualMomentumKellyStrategy()
+    end = end or datetime.now().strftime("%Y-%m-%d")
+    # 生产策略：凯利·门槛8%（2026-10 切换）。12M 动量>8% 才买
+    strategy = DualMomentumKellyFilterStrategy()
 
     # 回放完整历史，让组合回撤刹车（-15%/-20% 月频）用真实净值路径定档
     all_data = {}
@@ -58,8 +63,7 @@ def main() -> None:
         rebalance_freq="M",
     )
     if result.equity_curve.empty:
-        print("无权重输出（数据不足）")
-        return
+        raise RuntimeError("无权重输出（数据不足）")
 
     # 用「今天」的信号，而不是上月再平衡日的权重（月频刹车最多滞后一个月）
     as_of = result.equity_curve.index[-1]
@@ -95,8 +99,33 @@ def main() -> None:
             domestic_w[sym] = w
         elif sym in TIGER_PROXY:
             tiger_w[TIGER_PROXY[sym]] = w
-        elif sym in TIGER_SYMBOLS or sym == CASH_PROXY:
+        else:
             tiger_w[sym] = w
+
+    return {
+        "as_of": as_of,
+        "strategy": strategy,
+        "weights": weights,
+        "tiger_w": tiger_w,
+        "domestic_w": domestic_w,
+        "brake_action": brake_action,
+        "current_dd": current_dd,
+        "nav": float(eq.iloc[-1]),
+        "weight_history": result.weight_history,
+        "name_map": STRATEGY_UNIVERSE,
+    }
+
+
+def write_target_weights(alloc: dict) -> Path:
+    """把调仓单落到 data/target_weights/YYYY-MM-DD/。"""
+    as_of = alloc["as_of"]
+    strategy = alloc["strategy"]
+    weights = alloc["weights"]
+    tiger_w = alloc["tiger_w"]
+    domestic_w = alloc["domestic_w"]
+    brake_action = alloc["brake_action"]
+    current_dd = alloc["current_dd"]
+    name_map = alloc["name_map"]
 
     out_dir = Path(__file__).parent.parent / "data" / "target_weights" / as_of.strftime("%Y-%m-%d")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +151,6 @@ def main() -> None:
     )
 
     lines = ["symbol,name,weight"]
-    name_map = STRATEGY_UNIVERSE
     for s, w in sorted(domestic_w.items(), key=lambda x: -x[1]):
         lines.append(f"{s},{name_map.get(s, s)},{w:.4f}")
     if not domestic_w:
@@ -134,7 +162,7 @@ def main() -> None:
         "",
         f"- 策略：{strategy.name}（k={strategy.kelly_k}, 单票顶 {strategy.max_weight:.0%}）",
         f"- 风控：回撤 {strategy.dd_halve:.0%} 减半 / {strategy.dd_flatten:.0%} 清仓（月频）",
-        f"- 模型净值：{result.equity_curve.iloc[-1]:.3f}（起点 1.0）",
+        f"- 模型净值：{alloc['nav']:.3f}（起点 1.0）",
         f"- 模型当前回撤：{current_dd * 100:.1f}%",
         f"- 本次风控动作：**{brake_action}**",
     ]
@@ -156,6 +184,12 @@ def main() -> None:
     print(f"老虎腿 {len(tiger_w)} 个标的，境内腿 {len(domestic_w)} 个标的")
     for s, w in sorted(weights.items(), key=lambda x: -x[1]):
         print(f"  {s:8s} {w:6.1%}")
+    return out_dir
+
+
+def main() -> None:
+    alloc = build_monthly_allocation()
+    write_target_weights(alloc)
 
 
 if __name__ == "__main__":

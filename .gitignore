@@ -13,6 +13,11 @@ venv/
 data/*.db
 data/*.sqlite
 
+# 实盘调仓单与成交记录（含真实持仓，不入库）
+data/target_weights/
+data/.last_monthly_report
+data/live_trades.csv
+
 # 环境变量
 .env
 .env.local

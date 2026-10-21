@@ -806,6 +806,29 @@ def _send_13f_notification(storage, result: dict):
         logger.warning("  飞书通知发送失败")
 
 
+def maybe_send_monthly_report() -> None:
+    """月初（每自然月第一次同步）推送飞书月报 + 写调仓单"""
+    logger.info("[月报] 检查是否需要月初推送...")
+    try:
+        marker = PROJECT_ROOT / "data" / ".last_monthly_report"
+        month = datetime.now().strftime("%Y-%m")
+        if marker.exists() and marker.read_text(encoding="utf-8").strip() == month:
+            logger.info(f"  本月（{month}）已推送过，跳过")
+            return
+
+        # 延迟 import，避免日常同步被月报依赖拖慢
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from monthly_report import send_monthly_report
+
+        ok = send_monthly_report(force=True)
+        if ok:
+            logger.info("  月报已推送")
+        else:
+            logger.warning("  月报未推送（见上方日志）")
+    except Exception as e:
+        logger.error(f"月初月报失败: {e}")
+
+
 def evaluate_alerts(dm: DataManager) -> list:
     """评估告警并推送"""
     logger.info("[新增] 评估风险告警...")
@@ -877,6 +900,9 @@ def main():
 
     # 评估告警并推送
     alerts = evaluate_alerts(dm)
+
+    # 月初飞书月报（每自然月第一次）
+    maybe_send_monthly_report()
 
     # 导出 snapshot
     export_snapshot()
