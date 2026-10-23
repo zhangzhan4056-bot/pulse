@@ -6,7 +6,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import streamlit as st
 import pandas as pd
@@ -35,6 +35,9 @@ from core.strategy.strategies import (
     AntifragileDailyStrategy,
     TailRiskParityStrategy,
     DrawdownConstraintStrategy,
+    StockMomentumGrowthStrategy,
+    QQQBuyHoldStrategy,
+    SPYBuyHoldStrategy,
     STRATEGY_CATEGORIES,
 )
 from core.backtest import BacktestEngine, BacktestResult
@@ -63,6 +66,9 @@ STRATEGY_REGISTRY = {
     "凯利·门槛8%": DualMomentumKellyFilterStrategy,
     "凯利·70/30 CTA": DualMomentumKellyCTASleeveStrategy,
     "凯利·70/30 反脆弱": DualMomentumKellyHedgeSleeveStrategy,
+    "成长动量·个股": StockMomentumGrowthStrategy,
+    "满仓QQQ长期持有": QQQBuyHoldStrategy,
+    "满仓SPY长期持有": SPYBuyHoldStrategy,
     "风险平价策略": RiskParityStrategy,
     "低相关性组合策略": MinCorrelationStrategy,
     "尾部风险平价": TailRiskParityStrategy,
@@ -81,13 +87,24 @@ def get_data_manager():
     return DataManager()
 
 
-def load_all_assets(dm: DataManager, start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
-    """加载全部资产数据"""
+def load_all_assets(
+    dm: DataManager,
+    start_date: str,
+    end_date: str,
+    extra_symbols: Optional[List[str]] = None,
+    include_growth: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """加载资产数据（默认 STRATEGY_UNIVERSE；个股宇宙仅在选中策略需要时加载）"""
+    from core.data.config import GROWTH_UNIVERSE
 
+    all_symbols = dict(STRATEGY_UNIVERSE)
+    if include_growth:
+        all_symbols.update(GROWTH_UNIVERSE)
+    if extra_symbols:
+        for s in extra_symbols:
+            all_symbols.setdefault(s, s)
 
-    all_symbols = STRATEGY_UNIVERSE
     data = {}
-
     for symbol in all_symbols:
         df = dm.load(symbol, start_date, end_date)
         if not df.empty:
@@ -116,9 +133,33 @@ def run_backtests(
     load_start = (start_dt - timedelta(days=warmup_calendar_days)).strftime("%Y-%m-%d")
     days_needed = (end_dt - start_dt).days + warmup_calendar_days + 30
     dm.prefetch_for_backtest(days_needed)
+    # 成长动量用到美股个股：只补缺数/过旧的标的，避免每次全量 55 连打 API
+    need_stocks = any(
+        name.startswith("成长动量") for name in strategy_names
+    )
+    if need_stocks:
+        try:
+            stale = dm.us_stocks_need_refresh(load_start, end_date)
+            if stale:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"补拉 {len(stale)} 只个股（其余已有覆盖）: {stale[:8]}..."
+                )
+                dm.fetch_us_stocks(
+                    outputsize=max(250, int(days_needed * 252 / 365)),
+                    symbols=stale,
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"预取美股个股失败: {e}")
 
     # 加载数据
-    all_data = load_all_assets(dm, start_date=load_start, end_date=end_date)
+    all_data = load_all_assets(
+        dm,
+        start_date=load_start,
+        end_date=end_date,
+        include_growth=need_stocks,
+    )
 
     if not all_data:
         return []

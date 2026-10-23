@@ -22,11 +22,11 @@ market-pulse/
 │       └── tooltips.py     # 指标说明 tooltip 组件（CSS hover 弹窗）
 ├── pages/                  # Streamlit 页面（必须在根目录）
 │   ├── 1_市场全景.py        # P1: 市场全景（盯盘）
-│   ├── 2_机会扫描.py        # P2: 全市场机会扫描（分析）
+│   ├── 2_机会扫描.py        # P2: 全市场机会扫描（门槛8% 口径，结论先行）
 │   ├── 3_策略回测.py        # P3: 策略回测（策略发现）
-│   ├── 4_复盘回顾.py        # P4: 复盘回顾（P2+P3 双轨复盘）
-│   ├── 5_政治信号.py        # P5: 政治信号跟踪（特朗普家族信号链）
-│   └── 6_机构持仓.py        # P6: 机构持仓跟踪（13-F 季报分析）
+│   ├── 4_复盘回顾.py        # P4: 复盘回顾（P2+P3 双轨，结论先行）
+│   ├── 5_政治信号.py        # P5: 政治信号跟踪（特朗普家族信号链，结论先行）
+│   └── 6_机构持仓.py        # P6: 机构持仓跟踪（13-F 季报，结论先行）
 ├── core/                   # 核心逻辑
 │   ├── data/               # 数据获取层
 │   │   ├── config.py       # API key 管理、资产配置
@@ -48,12 +48,12 @@ market-pulse/
 │   │   └── notifier.py       # 飞书 Webhook 推送
 │   ├── strategy/           # 策略引擎
 │   │   ├── indicators.py   # 技术指标计算
-│   │   ├── strategies.py   # 策略类定义（19 种配置策略）
+│   │   ├── strategies.py   # 策略类定义（P3 注册 20 种；退役类仍保留定义）
 │   │   ├── trend_follow.py # 趋势跟随信号（TSMOM/Donchian/吊灯，纯函数）
 │   │   ├── kelly.py        # 分数凯利仓位配比（μ/σ²）
 │   │   └── regime_config.py # 市场体制判定阈值配置
 │   ├── scanner/            # 全市场扫描器
-│   │   ├── scorer.py       # 多维评分（趋势/均值回归/风险）
+│   │   ├── scorer.py       # 门槛8%扫描（12M>8% 过门槛/门槛附近/不碰）
 │   │   ├── sector_alert.py # 板块异常检测（动量骤降/波动率飙升/相对走弱）
 │   │   ├── history.py      # 扫描历史持久化（ScanHistory → scan_history 表）
 │   │   └── renderer.py     # 扫描结果渲染组件
@@ -65,10 +65,11 @@ market-pulse/
 │   ├── export_target_weights.py # 月度调仓单（老虎/境内双账户，A2 回撤刹车）
 │   ├── monthly_report.py   # 月初飞书月报（持仓变动+近一年结构+权益/现金仓位）
 │   ├── sweep_antifragile.py # 反脆弱策略参数扫描
+│   ├── report_growth_rotation.py # 成长动量 vs 满仓QQQ/SPY长持 vs 凯利·门槛8% 对照报告
 │   ├── com.market-pulse.daily-sync.plist # macOS launchd 定时任务配置
 │   └── test_data.py        # 数据层验证脚本
 ├── docs/                   # 项目文档
-└── tests/                  # 测试（待实现）
+└── tests/                  # 单元测试（test_kelly / test_trend_follow）
 ```
 
 ## 数据源
@@ -76,7 +77,8 @@ market-pulse/
 - **美股/ETF**: Twelve Data API (免费计划，每分钟 8 次限制)
   - 大类资产：SPY (标普500), QQQ (纳指100), EFA (发达市场), EEM (新兴市场), TLT (20年国债), SHY (1-3年短债/现金代理), CL (WTI原油), GLD (黄金ETF)
   - 板块 ETF：XLK(科技), XLF(金融), XLE(能源), XLV(医疗), XLI(工业), XLP(消费必需), XLY(可选消费), XLU(公用事业), XLRE(房地产), XLB(材料), XLC(通信)
-  - 策略宇宙 `STRATEGY_UNIVERSE`（31 标的）= 大类+国际+A股行业+美股板块，所有策略共用；未配满仓位自动买入 `CASH_PROXY=SHY`
+  - 策略宇宙 `STRATEGY_UNIVERSE`（31 标的）= 大类+国际+A股行业+美股板块，ETF 策略共用；未配满仓位自动买入 `CASH_PROXY=SHY`
+  - 个股宇宙 `US_STOCK_UNIVERSE`（55 只，2019 年市值前列+落后股）— 仅「成长动量·个股」使用，**不进 STRATEGY_UNIVERSE**；引擎按 `get_all_symbols()` 过滤，避免个股污染 ETF 策略
   - API key: 环境变量 `TWELVEDATA_API_KEY` 或 `~/.local/bin/finquote.conf`
 - **A股指数**: AkShare 新浪源（东方财富被墙）
   - 399006 (创业板指), 000688 (科创50), 000300 (沪深300)
@@ -114,16 +116,16 @@ market-pulse/
 - [x] 数据获取层 (core/data/)
 - [x] P1 市场全景页面 (pages/1_市场全景.py)
 - [x] 策略引擎 - 技术指标 (core/strategy/indicators.py)
-- [x] P2 全市场机会扫描 (pages/2_机会扫描.py) — 多维评分扫描+机会发现+规避清单，扫描结果自动持久化到 scan_history 表
-- [x] 全市场扫描器 (core/scanner/) — 趋势/均值回归/风险三维评分+ScanHistory持久化，对应 P3 的 11 种策略
+- [x] P2 全市场机会扫描 (pages/2_机会扫描.py) — 门槛8% 口径：过门槛候选/门槛附近/不碰，结论先行，扫描结果自动持久化到 scan_history 表
+- [x] 全市场扫描器 (core/scanner/) — 12M>8% 门槛分组 + 凯利参考仓位（扫描口径独立于生产策略「成长动量·个股」）
 - [x] 回测引擎 (core/backtest/engine.py) — 月度再平衡，按日计算组合收益
-- [x] 策略类 (core/strategy/strategies.py) — 19 种策略，分四类：趋势跟随（TSMOM/CTA突破/动量吊灯/均线基线）、趋势动量（双动量系列+凯利）、风险配置、反脆弱
+- [x] 策略类 (core/strategy/strategies.py) — P3 注册 21 种，分四类：趋势跟随（TSMOM/CTA突破/动量吊灯/均线基线）、趋势动量（双动量系列+凯利+成长动量+满仓长持基准）、风险配置、反脆弱
 - [x] 趋势跟随框架 (core/strategy/trend_follow.py) — TSMOM 12月符号 / Donchian 55-20 突破 / 吊灯移动止损，无状态重放，与双动量（横截面选强）角色分工
 - [x] 分数凯利配比 (core/strategy/kelly.py) — w=clip(k·μ̂/σ², 0, 20%)，策略用 k=0.5（1/2 凯利），单票硬顶+总仓位压缩；闲钱由引擎买入 SHY
 - [x] P3 策略回测页面 (pages/3_策略回测.py) — 策略对比与历史回测
-- [x] P4 复盘回顾页面 (pages/4_复盘回顾.py) — 双轨复盘：市场策略推荐+机会扫描分类准确性评估+策略推荐跑赢率评估，含评分区间命中率分析和参数优化建议
-- [x] P5 政治信号跟踪页面 (pages/5_政治信号.py) — 特朗普家族信号链跟踪：持仓变动/公开喊话/催化剂事件，信号链视图+全部时间线+走势图叠加。数据源：SEC EDGAR + White House PTR + Google News RSS + 白宫RSS，增量更新
-- [x] P6 机构持仓跟踪 (pages/6_机构持仓.py) — 13-F 季度持仓跟踪：20 家顶级机构，持仓概览（共识重仓标的汇总+各机构 Top10 treemap）+增持信号（板块分布概括+高共识标的+Top 5 详情图表）+跨机构对比+管理人管理。数据源：SEC EDGAR 13F-HR，CIK submissions API，每日检查
+- [x] P4 复盘回顾页面 (pages/4_复盘回顾.py) — 双轨复盘：机会扫描分类准确性评估+生产策略跑赢率评估（vs SPY），含按体制分组、评分区间命中率分析和参数优化建议；当前市场体制/策略推荐只在 P2 顶部与主页，P4 不重复
+- [x] P5 政治信号跟踪页面 (pages/5_政治信号.py) — 特朗普家族信号链跟踪：持仓变动/公开喊话/催化剂事件，近 30 天结论横幅 + 信号链视图 + 全部时间线 + 走势图叠加。数据源：SEC EDGAR + White House PTR + Google News RSS + 白宫RSS，增量更新
+- [x] P6 机构持仓跟踪 (pages/6_机构持仓.py) — 13-F 季度持仓跟踪：20 家顶级机构，页级结论 + 持仓概览（共识结论 + 各机构 Top10 treemap）+增持信号（结论 + 板块分布 + 高共识 + Top 5 详情）+跨机构对比+管理人管理。数据源：SEC EDGAR 13F-HR，CIK submissions API，每日检查
 - [x] P1 宏观观测模块 — CPI/PPI/10Y国债/联邦基金利率/失业率/VIX，百分位排名+欧氏距离相似度匹配，散点图+时间线可视化
 - [x] 风险预警系统 — 五层防线：宏观事件日历+VIX监控+板块异常检测+AI叙事新闻监控+飞书推送
   - 宏观事件日历 (core/data/event_calendar.py) — FOMC/NFP/CPI/PPI/三巫日/重要财报，风险窗口标记
@@ -137,11 +139,13 @@ market-pulse/
   - P1 风险面板 — VIX卡片+事件日历+持仓关注+板块异常信号
 - [x] 指标说明 Tooltip 系统 (app/components/tooltips.py) — 全页面 hover 弹窗，覆盖综合评分/市场体制/动量/趋势/回归/风险/技术指标/回测指标/复盘指标/宏观指标共 30 个常量
 - [x] 告警去重与主题分组 — 同板块多基金合并为一条告警（FUND_THEMES 映射），存储层 12 小时时间窗口去重（save_dedup）
-- [x] 月初飞书月报 (scripts/monthly_report.py) — 凯利·门槛8%持仓变动+近一年结构+权益/现金仓位；daily_sync 每自然月首次自动推送；权重与 export_target_weights 共用 build_monthly_allocation
-- [x] 生产策略切换为「凯利·门槛8%」(2026-10) — DualMomentumKellyFilterStrategy，12M 动量>8% 才买；月报/调仓单只输出这一套
+- [x] 月初飞书月报 (scripts/monthly_report.py) — 成长动量·个股持仓变动+近一年结构+权益/现金仓位；daily_sync 每自然月首次自动推送；权重与 export_target_weights 共用 build_monthly_allocation
+- [x] 生产策略切换为「成长动量·个股」(2026-10) — StockMomentumGrowthStrategy，55 股 3M 动量 top12 满仓，无 A2，回撤预算 −40%；月报/调仓单只输出这一套。前生产「凯利·门槛8%」保留为对照
+- [x] 成长动量·个股 (2026-10) — StockMomentumGrowthStrategy，55 股 3M 动量 top12 满仓。引擎实测 2019-2025：CAGR 27.9% / DD −34.8% / Calmar 0.80（QQQ 21.8% / −35.6% / 0.61）。**3 年滚动 ≥26% 仅 29% 窗口**，是「经常够」不是「稳稳」
+- [x] 基准策略 (2026-10) — 满仓QQQ长期持有 / 满仓SPY长期持有，对照主动策略是否值得折腾
 
 ### 待开发（按优先级排序）
-1. [ ] P4 增强 — 基准对比（vs SPY）、按体制分组分析（盈亏比/regret_rate 已实现）
+1. [ ] 温度趋势轮动策略（Temperature Trend Rotation）— 七档温度状态机 + 吊灯止损（设计已定稿待实现）
 
 ## 运行方式
 
@@ -170,6 +174,7 @@ python scripts/daily_sync.py
 - 数据库: SQLite
 - 版本控制: git，功能分支开发后合并
 - 提交信息格式: `feat: xxx` / `fix: xxx` / `docs: xxx`
+- **页面版式：结论先行、明细往后**——顶部先给一句话结论/共识/该看谁，再展开图表和明细表
 
 ## 已知限制
 
@@ -181,8 +186,8 @@ python scripts/daily_sync.py
 
 ## 风控红线
 
-- 个股止损线: -8%
-- 组合回撤: -10% 减半仓，-15% 清仓（人工）；自动化刹车用 A2 月频 −15%/−20%
+- 个股止损线: -8%（趋势类策略默认无紧止损，见已知陷阱）
+- 组合回撤: **−40%**（2026-10 放宽，接受成长动量量级回撤；无自动刹车，深回撤人工决策）
 - 单票仓位: 不超过总仓位 20%
 - 合规: 金融从业人员，**不买 A 股个股**，境内只用 ETF/场外基金
 
@@ -197,11 +202,12 @@ python scripts/daily_sync.py
 - **等权双动量 top3 = 33%/票，破 20% 红线**：要守红线用「双动量×凯利」（max_weight=0.20）；等权版回测收益更高但单票超限，不能直接上实盘
 - **扩宇宙的主要收益来源是「填满 5 个 20% 名额」**：10 标的时常只有 2-3 个过绝对动量，20% 顶格下最多 40-60% 仓位。23 标的后平均仓位接近满仓，2021 从 +0% 修到 +5%。扩行业指数前先算相关，>0.85 是假分散（如军工~半导体 0.93）
 - **单策略的组合 DD 重放用基础权重路径**：generate_weights 每次独立重放历史，禁止把 entry/peak/stop 挂在 self 上（引擎 except 时会失步）
-- **不要把 −10%/−15% 组合回撤红线做成自动日频/月频刹车**：对双动量×凯利实测，收益从 +81% 打到 +41~56%，回撤只少 2–3pp，夏普变差。慢熊（2022-03→2023-10，19 个月 −20.5%）里自动减仓=卖在下跌途中。生产默认 **A2：月频 −15% 减半 / −20% 清仓**（`DualMomentumKellyFilterStrategy` 属性）。**生产策略 = 凯利·门槛8%**（12M>8% 才买），月报/调仓单只输出这一套
+- **不要把组合回撤红线做成自动日频/月频刹车**：对双动量×凯利实测，收益从 +81% 打到 +41~56%，回撤只少 2–3pp，夏普变差。慢熊里自动减仓=卖在下跌途中。**生产策略 = 成长动量·个股**（3M 动量 top12 满仓，`portfolio_dd_brake=False`，回撤预算 −40% 人工扛）；月报/调仓单只输出这一套。前生产「凯利·门槛8%」的 A2 月频 −15%/−20% 仅作对照保留
 - **清仓后不要用「DD 收窄」当恢复仓位条件**：净值冻结后 `DD=NAV/峰值−1` 不会自己修复，会死锁在空仓（实测总收益掉到 +0.9%）。恢复条件要么 None（再平衡按当前 DD 重定档），要么用时间/信号，不能用 DD 修复
 - **组合峰值必须逐日更新**：只在再平衡日 `peak=max(peak,nav)` 会丢掉月内高点，刹车几乎不触发
 - **双账户实盘走「信号统一、执行拆分」**：没有零售平台能一个策略同时驱动老虎+境内券商。每月 `scripts/export_target_weights.py` 出 tiger.json + domestic.csv；A 股次日开盘前、美股当晚执行，两账户各自 20% 顶
 - **月度调仓单必须按出单日 DD 定档，不能贴上月 weight_history**：月频刹车最多滞后一个月，月末满仓单在月中深回撤时会给出错误满仓。`export_target_weights.py` 用 `generate_weights(today)` + 当前模型 DD 重算 A2 档位
+- **回测/调仓不要每次全量拉个股**：免费计划 8 次/分钟，55 只连打 = 转圈 7 分钟+。先 `us_stocks_need_refresh()` 判覆盖，只补缺数/过旧的；`fetch_us_stocks(symbols=...)` 定向拉。已有约 8 年历史（outputsize 上限）时再拉也延不了头部。P3 的 `GROWTH_UNIVERSE` 只在选中成长动量时加载
 
 - **AkShare 用新浪源**：东方财富源（`*_em` 函数）被墙，一律用 `stock_zh_index_daily`、`index_global_hist_sina`
 - **Twelve Data 免费计划**：每分钟 8 次，`quote` 端点支持的 symbol 比 `time_series` 少，测试新 symbol 用 `time_series`
@@ -211,17 +217,20 @@ python scripts/daily_sync.py
 - **API key 配置文件格式**：`finquote.conf` 是 `key=value` 带注释，不能直接读整行当 key
 - **Twelve Data `start_date/end_date` 参数有隐藏限制**：免费计划用日期范围参数只返回约 2 年数据，必须用 `outputsize` 参数才能拿到更长历史（本地数据是用 `outputsize` 积累的，线上用 `start_date` 会截断）
 - **Streamlit Cloud 数据库是临时的**：每次重启丢失，P1 的「一键获取」和 P3 的 `prefetch_for_backtest()` 都必须覆盖所有数据源（美股+A股+全球），不能只处理一种
-- **改完代码必须本地三个页面都跑一遍再 push**：不能只跑 P1 就认为没问题，P3 的 `st.columns(3)` 硬编码 bug 本地跑 P3 就能发现
-- **反脆弱对冲公式已改为简化 Black-Scholes**：用月末收盘价计算 SPY 月跌幅，BS 公式计算 OTM 月 put 赔付。标准版 cost=0.3%/月 + 5% OTM，激进版 cost=0.5%/月 + 3% OTM（经参数扫描优化）。vol=20%。不要用旧的线性公式 `excess_drop × leverage × cost`
+- **改完代码必须本地相关页面都跑一遍再 push**：不能只跑 P1 就认为没问题，P3 的 `st.columns(3)` 硬编码 bug 本地跑 P3 就能发现；策略/扫描改动至少跑 P2+P3+P4
+- **P4 复盘只实例化在产策略**：`_get_all_strategies()` 必须与文件顶部 import 一致。退役类（DualMomentum6M/3M、MomentumVolFilter、DrawdownControl、RegimeSwitching）仍在 `strategies.py` 里，但 P4 引用未 import 的类会 NameError
+- **反脆弱已全面切换 BS 公允价值定价**：`use_bs_cost=True`，`_bs_put_premium()` 动态算 OTM put 权利金，`_calc_option_payoff()` 只用到期日内在价值。标准版 cost=0.3%/月 + 5% OTM，激进版 0.5%/月 + 3% OTM，vol=20%。不要用旧线性公式 `excess_drop × leverage × cost`。买保险有成本，对冲收益低于纯双动量是正常的
 - **Twelve Data 免费计划不支持宏观端点**：`/cpi`、`/ppi`、`/treasury_yield`、`/fedfunds`、`/unemployment` 返回 404，必须用 AkShare 的 `macro_usa_*` 和 `bond_zh_us_rate` 函数
-- **QQQ AkShare 数据有 2005-2011 缺口**：`stock_us_daily(symbol='QQQ')` 缺少 2005~2011 数据（QQQ 曾改名 QQQQ），前向收益率计算对 2008 年相似月份返回 NaN
-- **AkShare 宏观函数偶尔 SSL 报错**：`datacenter-api.jin10.com` 偶发 SSLError，fetch_all 已有 try/except 容错，单个指标失败不影响其他
-- **反脆弱策略已全面切换到 BS 公允价值定价**：所有策略用 `use_bs_cost=True`，引擎用 `_bs_put_premium()` 动态计算 OTM put 权利金。赔付函数 `_calc_option_payoff()` 只用到期日内在价值（无时间价值虚增）。买保险有成本，对冲策略收益低于纯双动量是正常的
+- **QQQ AkShare 数据有 2005-2011 缺口**：`stock_us_daily(symbol='QQQ')` 缺少 2005~2011（QQQ 曾改名 QQQQ），前向收益率对 2008 年相似月份返回 NaN
+- **AkShare 宏观函数偶尔 SSL 报错**：`datacenter-api.jin10.com` 偶发 SSLError，fetch_all 已有 try/except 容错
+
 - **AkShare 基金净值日期是 datetime.date 对象**：`fund_open_fund_info_em` 返回的"净值日期"列是 `datetime.date` 不是字符串，`DataStorage.save()` 期望 datetime 列（用 `.dt.strftime`），需要先 `pd.to_datetime()` 转换
 - **Streamlit `st.info()` 的 `icon` 参数只接受单个 emoji 字符**：不接受 shortcode（如 `:warning:`），不接受多字符字符串。用 `st.info("text", icon="⚠️")` 而不是 `icon=" "`
-- **13-F XML 命名空间不一致**：不同机构的 13F XML 使用不同命名空间前缀，解析时一律用 `tag.split("}")[-1]` 去掉命名空间
-- **13-F 同一 CUSIP 可能出现多次**：同一 filing 中同一 CUSIP 可能有多个 infoTable 条目（不同 otherManager/子账户），必须按 CUSIP 聚合 value 和 shares 后再存储
-- **13-F value 单位是美元**：XML 中 `<value>` 的单位是整美元（不是千美元），与某些旧文档描述不同
-- **13-F 有季度延迟**：机构在季度结束后 45 天内提交，数据不是实时的
-- **13F-HR/A 是修订版**：同一家机构可能提交多个 13F-HR/A 修订，find_latest_13f 优先取最新的
+- **13-F XML 解析三件事**：命名空间前缀不一致（一律 `tag.split("}")[-1]`）；同一 CUSIP 可能多个 infoTable（按 CUSIP 聚合 value/shares）；`<value>` 单位是整美元。数据有季度延迟（季末后 45 天内提交），13F-HR/A 是修订版（find_latest_13f 取最新）
 - **飞书 Webhook 不支持 `collapsible` 标签**：`send_card()` 的 elements 中不能用 `{"tag": "collapsible"}`，会返回 `unsupported type of block`。用多个 markdown 段 + `hr` 分割线代替
+
+- **止损信号当日收盘确认，权重必须次日再生效**：用 `close[t]` 触发止损却把 `weight[t]` 清零 = 前视，回测虚高（实测假 55% CAGR）。信号在 t 收盘确认 → 权重从 t+1 起变
+- **A2/DD 刹车不能加在个股动量上**：个股动量天然回撤 −30%+，月频 −15% 清仓后净值冻结、DD 不会自己修复，死锁空仓（实测 CAGR 33%→13%）。`StockMomentumGrowthStrategy.portfolio_dd_brake=False`
+- **紧吊灯在个股趋势上是收益杀手**：k=3/4 会把 2023–2025 主升浪打飞（当年只剩 +6~15%）。引擎月频调权时盘中止损本就不生效，不要假装有
+- **20% SPY/QQQ 防御腿几乎不降个股动量回撤**：−34.2% vs 满仓 −34.8%，却吃掉 2.8pp CAGR。默认 `stock_budget=1.0`
+- **探针月末调仓 ≠ 引擎月初调仓**：2020–21 年收益可差 15pp，3 年滚动「≥26% 占比」会从 58% 掉到 29%。以引擎/`scripts/report_growth_rotation.py` 为准

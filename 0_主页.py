@@ -23,12 +23,13 @@ from core.strategy.regime_config import (
 )
 from core.scanner.history import ScanHistory
 from core.scanner.scorer import (
-    OPPORTUNITY_TREND_BUY,
-    OPPORTUNITY_TREND_WATCH,
-    OPPORTUNITY_MEAN_REVERSION,
+    OPPORTUNITY_CANDIDATE,
+    OPPORTUNITY_NEAR,
     OPPORTUNITY_AVOID,
     OPPORTUNITY_NEUTRAL,
+    ABS_MOMENTUM_MIN_PCT,
 )
+from core.strategy.regime_config import PRODUCTION_STRATEGY
 from app.components.tooltips import COMPOSITE_SCORE, VOL_REGIME, MARKET_REGIME, tip_icon
 
 # ============================================================
@@ -71,10 +72,10 @@ def _get_change_color(change_pct: float) -> str:
 # ============================================================
 
 OPP_CONFIG = {
-    OPPORTUNITY_TREND_BUY: {"label": "趋势买入", "icon": " ", "color": "#2e7d32", "bg": "#e8f5e9", "border": "#4caf50"},
-    OPPORTUNITY_TREND_WATCH: {"label": "趋势关注", "icon": " ", "color": "#1565c0", "bg": "#e3f2fd", "border": "#42a5f5"},
-    OPPORTUNITY_MEAN_REVERSION: {"label": "均值回归", "icon": " ", "color": "#6a1b9a", "bg": "#f3e5f5", "border": "#ab47bc"},
-    OPPORTUNITY_AVOID: {"label": "建议规避", "icon": " ", "color": "#c62828", "bg": "#ffebee", "border": "#ef5350"},
+    OPPORTUNITY_CANDIDATE: {"label": "过门槛", "icon": " ", "color": "#2e7d32", "bg": "#e8f5e9", "border": "#4caf50"},
+    OPPORTUNITY_NEAR: {"label": "门槛附近", "icon": " ", "color": "#1565c0", "bg": "#e3f2fd", "border": "#42a5f5"},
+    OPPORTUNITY_AVOID: {"label": "不碰", "icon": " ", "color": "#c62828", "bg": "#ffebee", "border": "#ef5350"},
+    OPPORTUNITY_NEUTRAL: {"label": "数据不足", "icon": "—", "color": "#757575", "bg": "#fafafa", "border": "#bdbdbd"},
 }
 
 
@@ -125,6 +126,9 @@ def _render_decision_panel(dm: DataManager):
         scan_date = latest.get("date", "")
         for s in latest.get("scores", []):
             opp = s.get("opportunity", OPPORTUNITY_NEUTRAL)
+            # 历史快照里的均值回归归到不碰
+            if opp == "mean_reversion":
+                opp = OPPORTUNITY_AVOID
             if opp in scores_by_opp:
                 scores_by_opp[opp].append(s)
 
@@ -132,23 +136,43 @@ def _render_decision_panel(dm: DataManager):
     col_main, col_side = st.columns([2, 1])
 
     with col_main:
+        # 一句话结论（先给结果）
+        cand_n = len(scores_by_opp.get(OPPORTUNITY_CANDIDATE, []))
+        near_n = len(scores_by_opp.get(OPPORTUNITY_NEAR, []))
+        avoid_n = len(scores_by_opp.get(OPPORTUNITY_AVOID, []))
+        top_cands = (scores_by_opp.get(OPPORTUNITY_CANDIDATE) or [])[:3]
+        top_names = "、".join(a.get("name", "") for a in top_cands) if top_cands else "无"
+
+        if cand_n > 0:
+            conclusion = (
+                f"**{PRODUCTION_STRATEGY}**（12M >{ABS_MOMENTUM_MIN_PCT:.0f}%）："
+                f"{cand_n} 个过门槛，优先 **{top_names}**；其余进现金/SHY。"
+            )
+            st.success(conclusion)
+        else:
+            conclusion = (
+                f"**{PRODUCTION_STRATEGY}**（12M >{ABS_MOMENTUM_MIN_PCT:.0f}%）："
+                f"0 个过门槛，{near_n} 个在门槛附近，**先不买，拿现金/SHY**。"
+            )
+            st.info(conclusion)
+
         # 体制横幅
         st.markdown(
-            f'<div style="padding:1rem 1.2rem;background:{bg};border-left:5px solid {color};'
-            f'border-radius:0 0.5rem 0.5rem 0;margin-bottom:0.8rem;">'
+            f'<div style="padding:0.85rem 1.1rem;background:{bg};border-left:5px solid {color};'
+            f'border-radius:0 0.5rem 0.5rem 0;margin-bottom:0.75rem;">'
             f'<div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">'
-            f'<span style="font-size:1.5rem;font-weight:bold;color:{color};">{label}{tip_icon(MARKET_REGIME)}</span>'
+            f'<span style="font-size:1.35rem;font-weight:bold;color:{color};">{label}{tip_icon(MARKET_REGIME)}</span>'
             f'<span style="color:#555;">{regime["description"]}</span>'
-            f'<span style="font-size:1.3rem;font-weight:600;color:{score_color};margin-left:auto;">{composite:.0f}</span>'
+            f'<span style="font-size:1.25rem;font-weight:600;color:{score_color};margin-left:auto;">{composite:.0f}</span>'
             f'<span style="color:#888;font-size:0.85rem;">综合评分{tip_icon(COMPOSITE_SCORE)} · 波动率{vol_regime}{tip_icon(VOL_REGIME)}</span>'
             f'</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-        # 推荐策略
+        # 推荐策略（生产策略置顶）
         st.markdown(
-            f'<div style="padding:0.6rem 1rem;background:#f8f9fa;border-radius:0.4rem;margin-bottom:0.8rem;">'
+            f'<div style="padding:0.55rem 1rem;background:#f8f9fa;border-radius:0.4rem;margin-bottom:0.75rem;">'
             f'<span style="font-weight:600;color:#333;">  推荐策略：</span>'
             f'<span style="color:{color};font-weight:600;">{rec["strategies"][0]["name"]}</span>'
             f'<span style="color:#666;margin-left:0.5rem;">— {rec["strategies"][0]["reason"]}</span>'
@@ -163,9 +187,9 @@ def _render_decision_panel(dm: DataManager):
         else:
             action_cols = st.columns(3)
             action_items = [
-                (OPPORTUNITY_TREND_BUY, "买入"),
-                (OPPORTUNITY_TREND_WATCH, "观望"),
-                (OPPORTUNITY_AVOID, "回避"),
+                (OPPORTUNITY_CANDIDATE, "过门槛"),
+                (OPPORTUNITY_NEAR, "门槛附近"),
+                (OPPORTUNITY_AVOID, "不碰"),
             ]
             for col, (opp_type, action_label) in zip(action_cols, action_items):
                 cfg = OPP_CONFIG[opp_type]
@@ -184,9 +208,8 @@ def _render_decision_panel(dm: DataManager):
                     else:
                         for a in assets[:3]:
                             summary = a.get("summary", "")
-                            # 截断长摘要
-                            if len(summary) > 30:
-                                summary = summary[:30] + "..."
+                            if len(summary) > 32:
+                                summary = summary[:32] + "..."
                             st.markdown(
                                 f'<div style="padding:0.3rem 0;border-bottom:1px solid #eee;">'
                                 f'<span style="font-weight:500;">{a["name"]}</span>'
@@ -224,6 +247,7 @@ KEY_ASSETS = [
     ("CL", "WTI原油"),
     ("GLD", "黄金"),
     ("000300", "沪深300"),
+    ("399813", "半导体"),
 ]
 
 
@@ -356,8 +380,8 @@ def _render_quick_links():
     """渲染快速导航卡片"""
     pages = [
         ("  市场全景", "大类资产实时行情、宏观观测、板块热度", "pages/1_市场全景.py"),
-        ("  机会扫描", "全市场多维评分，发现趋势/均值回归/规避机会", "pages/2_机会扫描.py"),
-        ("  策略回测", "15种策略历史回测对比，含反脆弱对冲策略", "pages/3_策略回测.py"),
+        ("  机会扫描", "门槛8% 扫描：过门槛候选 / 门槛附近 / 不碰", "pages/2_机会扫描.py"),
+        ("  策略回测", "策略历史回测对比，生产=成长动量·个股", "pages/3_策略回测.py"),
         ("  复盘回顾", "双轨复盘：扫描准确性 + 策略跑赢率，按体制分组", "pages/4_复盘回顾.py"),
         ("  机构持仓", "13-F 季度持仓跟踪、增持信号检测、机构对比", "pages/6_机构持仓.py"),
     ]

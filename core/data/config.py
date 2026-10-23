@@ -113,7 +113,38 @@ GLOBAL_SYMBOLS = ASSETS["global_equity"]
 # 美股板块 ETF symbol
 US_SECTORS_SYMBOLS = ASSETS["us_sectors"]
 
-# 策略可交易宇宙 = 大类 + 国际 + 板块（所有策略共用）
+# 美股个股宇宙（成长动量策略专用，不进 STRATEGY_UNIVERSE，避免污染 ETF 策略）
+# 2019 年市值前列 + 已知落后股（INTC/GE/T/PFE 等），降低幸存者偏差
+US_STOCK_UNIVERSE = {
+    # 科技/半导体
+    "AAPL": "苹果", "MSFT": "微软", "AMZN": "亚马逊", "GOOGL": "谷歌",
+    "META": "Meta", "NVDA": "英伟达", "AVGO": "博通", "ADBE": "Adobe",
+    "CRM": "Salesforce", "ORCL": "甲骨文", "AMD": "AMD", "TSLA": "特斯拉",
+    "NFLX": "奈飞", "QCOM": "高通", "TXN": "德州仪器", "AMAT": "应用材料",
+    "LRCX": "拉姆研究", "MU": "美光", "INTC": "英特尔", "CSCO": "思科",
+    "IBM": "IBM",
+    # 消费/医药
+    "COST": "好市多", "UNH": "联合健康", "V": "Visa", "MA": "万事达",
+    "HD": "家得宝", "MCD": "麦当劳", "NKE": "耐克", "SBUX": "星巴克",
+    "PM": "菲利普莫里斯", "JNJ": "强生", "PG": "宝洁", "KO": "可口可乐",
+    "PEP": "百事", "WMT": "沃尔玛", "ABBV": "艾伯维", "MRK": "默沙东",
+    "PFE": "辉瑞", "BMY": "百时美施贵宝", "LLY": "礼来",
+    # 金融/能源/工业
+    "JPM": "摩根大通", "BAC": "美银", "WFC": "富国", "GS": "高盛",
+    "MS": "摩根士丹利", "AXP": "美国运通", "XOM": "埃克森美孚", "CVX": "雪佛龙",
+    "BA": "波音", "CAT": "卡特彼勒", "HON": "霍尼韦尔", "GE": "GE",
+    "T": "AT&T", "VZ": "威瑞森", "DIS": "迪士尼",
+}
+
+# 成长动量策略宇宙 = 个股 + 基准/防御代理
+GROWTH_UNIVERSE = {
+    **US_STOCK_UNIVERSE,
+    "SPY": "标普500 ETF",
+    "QQQ": "纳斯达克100 ETF",
+    "SHY": "1-3年短债 ETF",
+}
+
+# 策略可交易宇宙 = 大类 + 国际 + 板块（ETF 策略共用，不含个股）
 STRATEGY_UNIVERSE = {
     **US_SYMBOLS,
     **CN_SYMBOLS,

@@ -31,7 +31,7 @@ from core.strategy.trend_follow import (
     simulate_donchian_positions,
     inverse_vol_weights,
 )
-from core.data.config import STRATEGY_UNIVERSE, CASH_PROXY
+from core.data.config import STRATEGY_UNIVERSE, CASH_PROXY, GROWTH_UNIVERSE, US_STOCK_UNIVERSE
 
 
 # 所有可配置资产（大类 + 国际 + 板块）
@@ -1347,6 +1347,131 @@ class RegimeSwitchingStrategy(BaseStrategy):
 
         # 委托子策略生成权重
         return self._sub_strategy.generate_weights(current_date, all_data, lookback_days)
+
+
+class StockMomentumGrowthStrategy(BaseStrategy):
+    """成长动量·美股个股（修订版 B）
+
+    目标：3 年 1 倍（CAGR ~26%）且风险收益双优于 QQQ。
+    引擎实测（2019-01~2025-12，月首调仓，佣金 0.1%，55 股含落后股）：
+    - 满仓 3M top12: CAGR 27.9% / DD −34.8% / 3 年滚动中位 20.9%、≥26% 占比 29%
+    - QQQ: CAGR 21.8% / DD −35.6% / 3 年滚动中位 12.8%
+    全期 CAGR 接近 26%，但 3 年滚动 ≥26% 只有约 3 成窗口——「经常够」不是「稳稳」。
+
+    设计要点：
+    1. 3 个月横截面动量 top12，只要正收益，满仓等权
+    2. 组合 DD 刹车（A2）明确关闭 —— 个股动量天然回撤 −30%+，A2 会死锁在空仓
+    3. 组合回撤红线 −40%（用户 2026-10 放宽，接受成长动量量级回撤）
+    单票紧止损（吊灯 k=3/4 或 −8%）会砍掉主升浪，已否掉；引擎仅月频调权，盘中止损本就不生效。
+    """
+
+    name = "成长动量·个股"
+    description = "美股 55 股 3M 动量 top12 满仓等权，无 A2；引擎实测 CAGR 27.9% / DD −34.8%"
+    category = "趋势动量"
+    rebalance_freq: str = "M"
+
+    mom_lookback: int = 63          # 3 个月
+    top_n: int = 12
+    stock_budget: float = 1.0
+    defense_budget: float = 0.0
+    min_history: int = 66           # 至少 3 个月交易日
+    per_name_cap: float = 0.20      # 单票红线
+    # 明确关闭组合 DD 自动刹车（个股动量天然 −30%+ 回撤，A2 会死锁空仓）
+    # 组合回撤红线已放宽到 −40%，不做自动减仓
+    portfolio_dd_brake: bool = False
+    dd_halve: float = -0.30
+    dd_flatten: float = -0.40
+    dd_restore: Optional[float] = None
+    dd_brake_intraday: bool = False
+
+    def get_all_symbols(self) -> List[str]:
+        return list(GROWTH_UNIVERSE.keys())
+
+    def _defense_leg(self, sliced: Dict[str, pd.Series]) -> Dict[str, float]:
+        """SPY 12M>0 → QQQ，否则 SHY；历史不足持 SHY"""
+        spy = sliced.get("SPY")
+        qqq = sliced.get("QQQ")
+        shy = sliced.get("SHY")
+        if spy is None or len(spy) < 252 or qqq is None:
+            return {"SHY": self.defense_budget} if shy is not None else {}
+        ret = spy.iloc[-1] / spy.iloc[-252] - 1
+        if ret > 0:
+            return {"QQQ": self.defense_budget}
+        return {"SHY": self.defense_budget} if shy is not None else {}
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        # 个股腿需要至少 mom_lookback 历史；防御腿要 252 天 SPY
+        sliced = _slice_data(all_data, current_date, max(lookback_days, 300))
+
+        returns = {}
+        for symbol in US_STOCK_UNIVERSE:
+            close = sliced.get(symbol)
+            if close is None or len(close) < self.min_history:
+                continue
+            ret = close.iloc[-1] / close.iloc[-self.mom_lookback] - 1
+            if ret > 0:
+                returns[symbol] = ret
+
+        weights: Dict[str, float] = {}
+
+        if returns:
+            ranked = sorted(returns.items(), key=lambda x: x[1], reverse=True)
+            selected = [s for s, _ in ranked[: self.top_n]]
+            if selected:
+                per = self.stock_budget / len(selected)
+                # 单票红线：top_n=12 时 8.3% 自然合规；top_n 更小时 clip
+                per = min(per, self.per_name_cap)
+                for s in selected:
+                    weights[s] = per
+                # clip 后总仓位可能低于 stock_budget，缺的进防御/现金
+
+        for s, w in self._defense_leg(sliced).items():
+            weights[s] = weights.get(s, 0.0) + w
+
+        return {s: w for s, w in weights.items() if w > 1e-6}
+
+
+class BuyHoldStrategy(BaseStrategy):
+    """满仓单 ETF 长期持有（基准）
+
+    不选股不择时，100% 持有指定 ETF。用于对照主动策略是否值得折腾。
+    """
+
+    category = "趋势动量"
+    rebalance_freq: str = "M"
+    symbol: str = "QQQ"
+
+    def get_all_symbols(self) -> List[str]:
+        return [self.symbol]
+
+    def generate_weights(
+        self,
+        current_date: pd.Timestamp,
+        all_data: Dict[str, pd.DataFrame],
+        lookback_days: int = 252,
+    ) -> Dict[str, float]:
+        sliced = _slice_data(all_data, current_date, 5)
+        close = sliced.get(self.symbol)
+        if close is None or len(close) == 0:
+            return {}
+        return {self.symbol: 1.0}
+
+
+class QQQBuyHoldStrategy(BuyHoldStrategy):
+    name = "满仓QQQ长期持有"
+    description = "100% QQQ 买入持有，不调仓不择时（成长股基准）"
+    symbol = "QQQ"
+
+
+class SPYBuyHoldStrategy(BuyHoldStrategy):
+    name = "满仓SPY长期持有"
+    description = "100% SPY 买入持有，不调仓不择时（大盘基准）"
+    symbol = "SPY"
 
 
 def _calc_max_dd(close: pd.Series) -> float:

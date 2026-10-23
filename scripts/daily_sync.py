@@ -136,9 +136,9 @@ def run_scan(dm: DataManager) -> dict:
         opp_counts[s.opportunity] = opp_counts.get(s.opportunity, 0) + 1
 
     logger.info(f"  体制: {regime_name}, 综合评分: {composite:.0f}")
-    logger.info(f"  趋势买入: {opp_counts.get('trend_buy', 0)}, "
-                f"均值回归: {opp_counts.get('mean_reversion', 0)}, "
-                f"规避: {opp_counts.get('avoid', 0)}")
+    logger.info(f"  过门槛: {opp_counts.get('trend_buy', 0)}, "
+                f"门槛附近: {opp_counts.get('trend_watch', 0)}, "
+                f"不碰: {opp_counts.get('avoid', 0)}")
 
     return {"regime": regime_name, "composite": composite, "scores_count": len(scores)}
 

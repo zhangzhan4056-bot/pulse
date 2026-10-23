@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""月初飞书月报 — 凯利·门槛8% 持仓变动 + 近一年结构 + 权益/现金仓位
+"""月初飞书月报 — 成长动量·个股 持仓变动 + 策略逻辑 + 分年回测 + 权益/现金仓位
 
 用法:
     python3 scripts/monthly_report.py            # 生成并推送飞书
@@ -44,6 +44,41 @@ BRAKE_HINT = {
     "halve": "回撤触发减半，**不要抄底加仓**",
     "flatten": "回撤触发清仓，**全部进现金/货基**",
 }
+
+# 策略逻辑说明（固定文案，口径要简单）
+STRATEGY_LOGIC_LINES = [
+    "- **选什么**：每月从 55 只美股大盘股（科技/消费/医药/金融/能源）里挑最强的 12 只",
+    "- **能不能买**：过去 3 个月涨幅 **为正** 才买。跌的不碰",
+    "- **买多少**：12 只等权，每只约 **8%**，单票最多 20%",
+    "- **什么时候换**：每月看一次。跌出前 12 名或 3 个月涨幅转负就换掉",
+    "- **什么时候躲**：**不自动躲**。回撤预算 **−40%**（历史最大约 −35%），深回撤人工决策",
+    "- **为什么是个股**：个股横截面动量比 ETF 轮动弹性更大，目标 3 年 1 倍量级；代价是回撤深、要扛得住",
+]
+
+
+def yearly_backtest_rows(equity_curve) -> list:
+    """从模型净值按自然年切收益/最大回撤。佣金 0.1%，含回撤刹车。"""
+    if equity_curve is None or len(equity_curve) < 2:
+        return []
+    eq = equity_curve.copy()
+    eq.index = pd.to_datetime(eq.index)
+    rows = []
+    for year in sorted(set(eq.index.year)):
+        seg = eq[eq.index.year == year]
+        if len(seg) < 2:
+            continue
+        prev = eq[eq.index.year < year]
+        start = float(prev.iloc[-1]) if len(prev) else 1.0
+        ret = float(seg.iloc[-1] / start - 1.0)
+        peak = seg.cummax()
+        dd = float((seg / peak - 1.0).min())
+        rows.append({
+            "year": year,
+            "return": ret,
+            "max_dd": dd,
+            "end_nav": float(seg.iloc[-1]),
+        })
+    return rows
 
 
 def split_buckets(weights: dict) -> dict:
@@ -173,14 +208,39 @@ def build_report(alloc: dict) -> dict:
     diffs = diff_holdings(prev_w, weights)
     hist = history_rows(alloc["weight_history"], weights, as_of, months=12)
 
-    # 一句话结论
-    strategy_name = alloc["strategy"].name
+    # 一句话结论 — 标题/结论都钉死「成长动量·个股」
+    strategy = alloc["strategy"]
+    strategy_name = strategy.name
+    if strategy_name != "成长动量·个股":
+        raise RuntimeError(
+            f"生产策略不是成长动量·个股（当前 {strategy_name}），拒绝出月报"
+        )
     conclusion = (
-        f"策略 **{strategy_name}**　"
+        f"生产策略 **成长动量·个股**（3 个月动量 top12 满仓）　"
         f"**{BRAKE_LABEL.get(brake, brake)}**　"
-        f"模型回撤 {current_dd * 100:.1f}%"
+        f"模型回撤 {current_dd * 100:.1f}%　回撤预算 −40%"
     )
     hint = BRAKE_HINT.get(brake, "")
+
+    # 分年回测
+    yearly = yearly_backtest_rows(alloc.get("equity_curve"))
+    yearly_lines = []
+    for r in yearly:
+        yearly_lines.append(
+            f"- {r['year']} 年　收益 **{r['return'] * 100:+.1f}%**　"
+            f"最大回撤 {r['max_dd'] * 100:.1f}%"
+        )
+    if yearly:
+        eq_all = alloc.get("equity_curve")
+        if eq_all is not None and len(eq_all) > 1:
+            total = float(eq_all.iloc[-1] / eq_all.iloc[0] - 1.0)
+            max_dd_all = float((eq_all / eq_all.cummax() - 1.0).min())
+            y0 = yearly[0]["year"]
+            yearly_lines.append(
+                f"- **{y0} 至今累计 {total * 100:+.1f}%**　最大回撤 {max_dd_all * 100:.1f}%"
+            )
+    if not yearly_lines:
+        yearly_lines = ["（净值历史不足，暂无分年结果）"]
 
     # 仓位：权益 / 黄金 / 现金 必展示；债/油有才展示
     pos_line = (
@@ -208,7 +268,7 @@ def build_report(alloc: dict) -> dict:
     elif gold_prev > 1e-4:
         gold_line = f"- **清仓** GLD 黄金ETF（上月 {gold_prev:.0%} → 0%）"
     else:
-        gold_line = "- **不配黄金**（GLD 0%，动量不支持，闲钱在现金/SHY）"
+        gold_line = "- **不配黄金**（本策略为美股个股，不含 GLD）"
 
     # 本月调仓
     if not diffs:
@@ -266,13 +326,15 @@ def build_report(alloc: dict) -> dict:
 
     return {
         "title": (
-            f"  {strategy_name} · {as_of.strftime('%Y-%m')} "
+            f"  成长动量·个股 月报 · {as_of.strftime('%Y-%m')} "
             f"｜{BRAKE_LABEL.get(brake, brake)}"
         ),
         "conclusion": conclusion,
         "hint": hint,
         "pos_line": pos_line,
         "change_lines": change_lines,
+        "strategy_lines": STRATEGY_LOGIC_LINES,
+        "yearly_lines": yearly_lines,
         "hist_lines": hist_lines,
         "exec_lines": exec_lines,
         "severity": "warning" if brake != "none" else "info",
@@ -290,6 +352,10 @@ def to_feishu_elements(report: dict) -> list:
         {"tag": "markdown", "content": f"**仓位占比**\n{report['pos_line']}"},
         {"tag": "hr"},
         {"tag": "markdown", "content": "**本月怎么调**\n" + "\n".join(report["change_lines"])},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "**策略逻辑（成长动量·个股）**\n" + "\n".join(report["strategy_lines"])},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "**历史每年回测**\n" + "\n".join(report["yearly_lines"])},
         {"tag": "hr"},
         {"tag": "markdown", "content": "**近一年持仓结构**\n" + "\n".join(report["hist_lines"])},
         {"tag": "hr"},
@@ -312,6 +378,12 @@ def format_plain(report: dict) -> str:
         "",
         "【本月怎么调】",
         *report["change_lines"],
+        "",
+        "【策略逻辑（成长动量·个股）】",
+        *report["strategy_lines"],
+        "",
+        "【历史每年回测】",
+        *report["yearly_lines"],
         "",
         "【近一年持仓结构】",
         *report["hist_lines"],

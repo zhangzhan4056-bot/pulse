@@ -1,9 +1,9 @@
-"""全市场扫描渲染组件
+"""全市场扫描渲染组件 — 门槛 8% 口径
 
-设计原则：
-- 每个模块有独立的视觉风格（颜色、边框、图标）
-- 重点信息用卡片突出，详细数据用表格
-- 颜色体系：绿色=机会，蓝色=关注，紫色=均值回归，红色=规避
+版式原则：
+- 先给结论（过门槛几个、该看谁、不碰谁），再展开明细
+- 绿=过门槛候选，蓝=门槛附近，红=不碰
+- 波动率只做仓位提示，不做淘汰标签
 """
 
 from typing import Dict, List
@@ -11,89 +11,138 @@ from typing import Dict, List
 import streamlit as st
 import pandas as pd
 
-from core.data.config import US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS
 from app.components.tooltips import (
-    TREND_SCORE, REVERSION_SCORE, RISK_SCORE, MOMENTUM_SCORE,
-    RSI, MACD_SIGNAL, MA_ALIGNMENT, DRAWDOWN, VOLATILITY,
+    MOMENTUM_SCORE, DRAWDOWN, VOLATILITY,
     RETURN_1M, RETURN_3M, tip_icon,
 )
 from core.scanner.scorer import (
     AssetScore,
-    OPPORTUNITY_TREND_BUY,
-    OPPORTUNITY_TREND_WATCH,
-    OPPORTUNITY_MEAN_REVERSION,
+    OPPORTUNITY_CANDIDATE,
+    OPPORTUNITY_NEAR,
     OPPORTUNITY_AVOID,
     OPPORTUNITY_NEUTRAL,
+    ABS_MOMENTUM_MIN_PCT,
+    TOP_N,
+    MAX_WEIGHT,
 )
 
 OPP_CONFIG = {
-    OPPORTUNITY_TREND_BUY: {
-        "label": "趋势买入", "icon": " ", "color": "#2e7d32",
+    OPPORTUNITY_CANDIDATE: {
+        "label": "过门槛候选", "icon": " ", "color": "#2e7d32",
         "bg": "#e8f5e9", "border": "#4caf50",
     },
-    OPPORTUNITY_TREND_WATCH: {
-        "label": "趋势关注", "icon": " ", "color": "#1565c0",
+    OPPORTUNITY_NEAR: {
+        "label": "门槛附近", "icon": " ", "color": "#1565c0",
         "bg": "#e3f2fd", "border": "#42a5f5",
     },
-    OPPORTUNITY_MEAN_REVERSION: {
-        "label": "均值回归", "icon": " ", "color": "#6a1b9a",
-        "bg": "#f3e5f5", "border": "#ab47bc",
-    },
     OPPORTUNITY_AVOID: {
-        "label": "建议规避", "icon": " ", "color": "#c62828",
+        "label": "不碰", "icon": " ", "color": "#c62828",
         "bg": "#ffebee", "border": "#ef5350",
     },
     OPPORTUNITY_NEUTRAL: {
-        "label": "中性", "icon": "—", "color": "#757575",
+        "label": "数据不足", "icon": "—", "color": "#757575",
         "bg": "#fafafa", "border": "#bdbdbd",
     },
 }
 
 
 # ============================================================
-# 市场情绪总览
+# 门槛规则说明
 # ============================================================
 
-def render_market_overview(scores: List[AssetScore]):
-    """市场情绪总览 — 四个带颜色的指标卡"""
-    total = len(scores)
-    if total == 0:
-        st.warning("暂无数据")
-        return
+def render_threshold_explainer():
+    """把「门槛是什么」摊开写清楚 — 定义 + 三档规则。"""
+    thr = ABS_MOMENTUM_MIN_PCT
+    st.markdown("####   门槛是什么")
 
-    counts = {}
-    for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
-                     OPPORTUNITY_MEAN_REVERSION, OPPORTUNITY_AVOID]:
-        counts[opp_type] = sum(1 for s in scores if s.opportunity == opp_type)
+    st.markdown(
+        f'<div style="padding:0.9rem 1.1rem;background:#f8f9fa;border:1px solid #e0e0e0;'
+        f'border-radius:0.5rem;margin-bottom:0.8rem;">'
+        f'<div style="font-size:1.05rem;font-weight:700;color:#222;margin-bottom:0.45rem;">'
+        f'买入门槛 = <span style="color:#2e7d32;font-size:1.25rem;">过去 12 个月涨幅 &gt; {thr:.0f}%</span></div>'
+        f'<div style="color:#555;font-size:0.92rem;line-height:1.55;">'
+        f'只涨一点点就买的假趋势很容易吐回去。门槛 {thr:.0f}% 过滤这些噪音——'
+        f'<b>不到 {thr:.0f}% 宁可空着拿现金/SHY</b>。'
+        f'过门槛后按动量排序取前 {TOP_N} 个，单票凯利仓位顶 {int(MAX_WEIGHT * 100)}%。'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    c1, c2, c3, c4 = st.columns(4)
-
-    for col, opp_type in zip([c1, c2, c3, c4], [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
-                                                  OPPORTUNITY_MEAN_REVERSION, OPPORTUNITY_AVOID]):
-        cfg = OPP_CONFIG[opp_type]
-        n = counts[opp_type]
+    # 三档规则
+    col1, col2, col3 = st.columns(3)
+    rules = [
+        (col1, "不碰", "12M ≤ 0%", "或 12M < −5% / 深回撤+空头", "#c62828", "#ffebee", "#ef5350"),
+        (col2, "门槛附近", f"0% < 12M ≤ {thr:.0f}%", "趋势不稳，先不买", "#1565c0", "#e3f2fd", "#42a5f5"),
+        (col3, "过门槛候选", f"12M > {thr:.0f}%", f"动量前 {TOP_N} 可买，参考仓位 0~{int(MAX_WEIGHT*100)}%", "#2e7d32", "#e8f5e9", "#4caf50"),
+    ]
+    for col, title, cond, note, color, bg, border in rules:
         with col:
             st.markdown(
-                f'<div style="text-align:center;padding:0.8rem;background:{cfg["bg"]};'
-                f'border-radius:0.5rem;border-bottom:3px solid {cfg["border"]};">'
-                f'<div style="font-size:1.8rem;">{cfg["icon"]}</div>'
-                f'<div style="font-size:2rem;font-weight:bold;color:{cfg["color"]};">{n}</div>'
-                f'<div style="font-size:0.85rem;color:{cfg["color"]};">{cfg["label"]}</div>'
+                f'<div style="padding:0.75rem 0.9rem;background:{bg};border-radius:0.45rem;'
+                f'border-top:3px solid {border};height:100%;">'
+                f'<div style="font-weight:700;color:{color};font-size:1rem;">{title}</div>'
+                f'<div style="font-size:1.15rem;font-weight:700;color:#222;margin:0.25rem 0;">{cond}</div>'
+                f'<div style="font-size:0.82rem;color:#666;">{note}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
-    # 一句话总结
-    buy_n = counts[OPPORTUNITY_TREND_BUY]
-    avoid_n = counts[OPPORTUNITY_AVOID]
-    if buy_n > 0 and avoid_n == 0:
-        st.success(f"市场偏多，{buy_n} 个资产出现趋势机会，无高风险资产")
-    elif avoid_n > 0 and buy_n == 0:
-        st.error(f"市场偏空，{avoid_n} 个资产需规避，无趋势机会")
-    elif buy_n > 0 and avoid_n > 0:
-        st.warning(f"分化明显：{buy_n} 个趋势机会 vs {avoid_n} 个需规避，注意择时")
+    st.caption("波动率只影响仓位大小，不淘汰标的；均值回归不是本策略的机会轴。")
+
+
+# ============================================================
+# 结论总览（页面最上）
+# ============================================================
+
+def render_conclusion(scores: List[AssetScore]):
+    """一句话结论 + 三桶计数 + top 候选。"""
+    if not scores:
+        st.warning("暂无数据")
+        return
+
+    candidates = [s for s in scores if s.opportunity == OPPORTUNITY_CANDIDATE]
+    near = [s for s in scores if s.opportunity == OPPORTUNITY_NEAR]
+    avoid = [s for s in scores if s.opportunity == OPPORTUNITY_AVOID]
+    top = sorted(candidates, key=lambda s: s.momentum_rank)[:TOP_N]
+
+    # 结论横幅
+    if top:
+        names = "、".join(f"{s.name} {s.kelly_weight:.0%}" for s in top)
+        st.success(
+            f"**生产策略口径（12M >{ABS_MOMENTUM_MIN_PCT:.0f}%）**："
+            f"{len(candidates)} 个过门槛，优先看 **{names}**。"
+            f"没过门槛的宁可现金/SHY。"
+        )
+    elif near:
+        st.info(
+            f"**生产策略口径（12M >{ABS_MOMENTUM_MIN_PCT:.0f}%）**："
+            f"0 个过门槛，{len(near)} 个在门槛附近，**先不买，拿现金/SHY**。"
+        )
     else:
-        st.info("市场中性，暂无明确方向信号")
+        st.warning(
+            f"**生产策略口径（12M >{ABS_MOMENTUM_MIN_PCT:.0f}%）**："
+            f"市场整体偏弱，{len(avoid)} 个不碰，**空仓防守**。"
+        )
+
+    # 三桶计数卡
+    c1, c2, c3 = st.columns(3)
+    buckets = [
+        (c1, OPPORTUNITY_CANDIDATE, candidates),
+        (c2, OPPORTUNITY_NEAR, near),
+        (c3, OPPORTUNITY_AVOID, avoid),
+    ]
+    for col, opp_type, group in buckets:
+        cfg = OPP_CONFIG[opp_type]
+        with col:
+            st.markdown(
+                f'<div style="text-align:center;padding:0.7rem;background:{cfg["bg"]};'
+                f'border-radius:0.5rem;border-bottom:3px solid {cfg["border"]};">'
+                f'<div style="font-size:1.5rem;">{cfg["icon"]}</div>'
+                f'<div style="font-size:1.8rem;font-weight:bold;color:{cfg["color"]};">{len(group)}</div>'
+                f'<div style="font-size:0.85rem;color:{cfg["color"]};">{cfg["label"]}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ============================================================
@@ -105,94 +154,91 @@ def render_opportunity_group(
     opportunity_type: str,
     expanded: bool = True,
 ):
-    """渲染一组机会资产 — 卡片 + 表格"""
+    """渲染一组资产 — 卡片 + 明细表。"""
     cfg = OPP_CONFIG.get(opportunity_type, OPP_CONFIG[OPPORTUNITY_NEUTRAL])
     group = [s for s in scores if s.opportunity == opportunity_type]
-
     if not group:
         return
 
-    # ---- 模块头部 ----
+    # 模块头部
     st.markdown(
-        f'<div style="padding:0.6rem 1rem;background:{cfg["bg"]};border-left:4px solid {cfg["border"]};'
+        f'<div style="padding:0.55rem 1rem;background:{cfg["bg"]};border-left:4px solid {cfg["border"]};'
         f'border-radius:0 0.3rem 0.3rem 0;margin-bottom:0.5rem;">'
-        f'<span style="font-size:1.2rem;">{cfg["icon"]}</span> '
-        f'<span style="font-size:1.1rem;font-weight:600;color:{cfg["color"]};">{cfg["label"]}</span>'
+        f'<span style="font-size:1.15rem;">{cfg["icon"]}</span> '
+        f'<span style="font-size:1.05rem;font-weight:600;color:{cfg["color"]};">{cfg["label"]}</span>'
         f'<span style="color:#999;margin-left:0.5rem;">{len(group)} 个资产</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
-    # ---- 机会卡片（每个资产一张） ----
     for s in group:
         _render_asset_card(s, cfg)
 
-    # ---- 策略提示 ----
     strategies = set()
     for s in group:
         strategies.update(s.strategies)
     if strategies:
         st.caption(f"  对应策略：{'、'.join(strategies)}")
 
-    # ---- 详细数据表（折叠） ----
     with st.expander("详细数据", expanded=False):
-        rows = []
-        for s in group:
-            rows.append({
-                "资产": s.name, "代码": s.symbol,
-                "趋势分": s.trend_score, "回归分": s.reversion_score,
-                "风险分": s.risk_score, "动量": s.momentum,
-                "RSI": s.rsi, "均线": s.ma_alignment,
-                "MACD": s.macd_signal, "回撤%": s.current_drawdown,
-                "波动率%": s.volatility,
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        with st.expander("  指标说明", expanded=False):
-            st.markdown(
-                f"- **趋势分**: {TREND_SCORE.split(chr(10))[1]}\n"
-                f"- **回归分**: {REVERSION_SCORE.split(chr(10))[1]}\n"
-                f"- **风险分**: {RISK_SCORE.split(chr(10))[1]}\n"
-                f"- **动量**: {MOMENTUM_SCORE.split(chr(10))[1]}\n"
-                f"- **RSI**: {RSI.split(chr(10))[1]}\n"
-                f"- **均线**: {MA_ALIGNMENT.split(chr(10))[1]}\n"
-                f"- **回撤**: {DRAWDOWN.split(chr(10))[1]}\n"
-                f"- **波动率**: {VOLATILITY.split(chr(10))[1]}"
-            )
+        rows = [_score_row(s) for s in group]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _score_row(s: AssetScore) -> dict:
+    cfg = OPP_CONFIG.get(s.opportunity, OPP_CONFIG[OPPORTUNITY_NEUTRAL])
+    return {
+        "分组": cfg["label"],
+        "资产": s.name,
+        "代码": s.symbol,
+        "12M%": s.ret_12m,
+        "过门槛": "✓" if s.passes_threshold else "",
+        "动量排名": s.momentum_rank,
+        "参考仓位": f"{s.kelly_weight:.0%}" if s.kelly_weight > 1e-4 else "—",
+        "回撤%": s.current_drawdown,
+        "波动率%": s.volatility,
+        "均线": s.ma_alignment,
+        "1月%": s.ret_1m,
+        "3月%": s.ret_3m,
+    }
 
 
 def _render_asset_card(s: AssetScore, cfg: dict):
-    """单个资产的机会卡片"""
-    # 关键指标（带 CSS tooltip）
-    indicators = []
-    if s.momentum is not None:
-        indicators.append(f'动量 {s.momentum:.0f}{tip_icon(MOMENTUM_SCORE)}')
-    if s.ma_alignment:
-        indicators.append(f'{s.ma_alignment}{tip_icon(MA_ALIGNMENT)}')
-    if s.rsi is not None:
-        indicators.append(f'RSI {s.rsi:.0f}{tip_icon(RSI)}')
-    if s.macd_signal and s.macd_signal != "无信号":
-        indicators.append(f'{s.macd_signal}{tip_icon(MACD_SIGNAL)}')
-
-    indicator_text = " · ".join(indicators)
-
-    # 回撤/波动率（风险相关）
-    risk_parts = []
+    """单个资产卡片 — 12M/门槛/仓位优先。"""
+    badges = []
+    if s.ret_12m is not None:
+        color = "#2e7d32" if s.passes_threshold else "#c62828" if s.ret_12m <= 0 else "#e65100"
+        badges.append(
+            f'<span style="color:{color};font-weight:600;">12M {s.ret_12m:+.1f}%</span>'
+        )
+    if s.passes_threshold and s.momentum_rank <= TOP_N:
+        badges.append(f'<span style="color:#2e7d32;">动量 #{s.momentum_rank}</span>')
+    if s.kelly_weight > 1e-4:
+        badges.append(f'<span style="color:#1565c0;">仓位 {s.kelly_weight:.0%}</span>')
     if s.current_drawdown < -5:
-        risk_parts.append(f'回撤 {s.current_drawdown:.1f}%{tip_icon(DRAWDOWN)}')
-    if s.volatility > 20:
-        risk_parts.append(f'波动率 {s.volatility:.1f}%{tip_icon(VOLATILITY)}')
-    risk_text = ""
-    if risk_parts:
-        risk_text = f'<span style="color:#c62828;font-size:0.8rem;margin-left:0.5rem;">{" · ".join(risk_parts)}</span>'
+        badges.append(f'<span style="color:#c62828;">回撤 {s.current_drawdown:.1f}%{tip_icon(DRAWDOWN)}</span>')
+
+    badge_html = "　".join(badges)
+
+    # 辅助指标（次要）
+    aux = []
+    if s.ma_alignment:
+        aux.append(s.ma_alignment)
+    if s.rsi is not None:
+        aux.append(f"RSI {s.rsi:.0f}")
+    if s.volatility:
+        aux.append(f"波动 {s.volatility:.0f}%{tip_icon(VOLATILITY)}")
+    aux_text = " · ".join(aux)
 
     st.markdown(
-        f'<div style="padding:0.5rem 0.8rem;margin-bottom:0.3rem;border-radius:0.3rem;'
+        f'<div style="padding:0.55rem 0.85rem;margin-bottom:0.35rem;border-radius:0.35rem;'
         f'border:1px solid #e0e0e0;background:white;">'
+        f'<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap;">'
         f'<span style="font-weight:600;color:{cfg["color"]};font-size:1rem;">{s.name}</span>'
-        f'<span style="color:#999;font-size:0.85rem;margin-left:0.3rem;">{s.symbol}</span>'
-        f'{risk_text}'
-        f'<div style="font-size:0.85rem;color:#555;margin-top:0.3rem;">{indicator_text}</div>'
+        f'<span style="color:#999;font-size:0.85rem;">{s.symbol}</span>'
+        f'<span style="margin-left:auto;">{badge_html}</span>'
+        f'</div>'
+        f'<div style="font-size:0.82rem;color:#666;margin-top:0.25rem;">{aux_text}</div>'
         f'<div style="font-size:0.9rem;color:{cfg["color"]};margin-top:0.2rem;font-weight:500;">{s.summary}</div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -200,53 +246,47 @@ def _render_asset_card(s: AssetScore, cfg: dict):
 
 
 # ============================================================
-# 规避清单
+# 不碰清单
 # ============================================================
 
 def render_avoid_list(scores: List[AssetScore]):
-    """渲染规避清单 — 红色警告风格"""
+    """不碰清单 — 红色警告。"""
     group = [s for s in scores if s.opportunity == OPPORTUNITY_AVOID]
-
     if not group:
-        st.success("✅ 当前无需规避的资产")
+        st.success("当前没有明确不碰的资产")
         return
 
     cfg = OPP_CONFIG[OPPORTUNITY_AVOID]
-
-    # 红色警告头部
     st.markdown(
-        f'<div style="padding:0.8rem 1rem;background:{cfg["bg"]};border:2px solid {cfg["border"]};'
+        f'<div style="padding:0.75rem 1rem;background:{cfg["bg"]};border:2px solid {cfg["border"]};'
         f'border-radius:0.5rem;margin-bottom:0.5rem;">'
-        f'<span style="font-size:1.2rem;">{cfg["icon"]}</span> '
-        f'<span style="font-size:1.1rem;font-weight:700;color:{cfg["color"]};">'
-        f'以下 {len(group)} 个资产建议规避</span>'
+        f'<span style="font-size:1.15rem;">{cfg["icon"]}</span> '
+        f'<span style="font-size:1.05rem;font-weight:700;color:{cfg["color"]};">'
+        f'以下 {len(group)} 个资产不碰</span>'
+        f'<span style="color:#666;margin-left:0.5rem;">未过门槛 / 走弱 / 深回撤</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
     for s in group:
-        # 风险原因标签
         reasons = []
+        if s.ret_12m is not None and s.ret_12m <= -5:
+            reasons.append(f"12M {s.ret_12m:+.1f}%")
         if s.current_drawdown < -15:
-            reasons.append("  深度回撤")
+            reasons.append("深度回撤")
         elif s.current_drawdown < -10:
-            reasons.append("  回撤较大")
+            reasons.append("回撤较大")
         if s.ma_alignment == "空头排列":
-            reasons.append("  空头排列")
-        if s.volatility > 25:
-            reasons.append("⚡ 高波动")
-        if s.risk_score >= 80:
-            reasons.append("  高风险")
-
+            reasons.append("空头排列")
         tags = " ".join(reasons)
 
         st.markdown(
-            f'<div style="padding:0.5rem 0.8rem;margin-bottom:0.3rem;border-radius:0.3rem;'
+            f'<div style="padding:0.45rem 0.8rem;margin-bottom:0.3rem;border-radius:0.3rem;'
             f'border:1px solid {cfg["border"]};background:{cfg["bg"]};">'
             f'<span style="font-weight:600;color:{cfg["color"]};">{s.name}</span>'
             f'<span style="color:#999;font-size:0.85rem;margin-left:0.3rem;">{s.symbol}</span>'
-            f'<span style="margin-left:0.5rem;">{tags}</span>'
-            f'<div style="font-size:0.9rem;color:{cfg["color"]};margin-top:0.2rem;">{s.summary}</div>'
+            f'<span style="margin-left:0.5rem;color:#c62828;font-size:0.85rem;">{tags}</span>'
+            f'<div style="font-size:0.88rem;color:{cfg["color"]};margin-top:0.15rem;">{s.summary}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -257,38 +297,17 @@ def render_avoid_list(scores: List[AssetScore]):
 # ============================================================
 
 def render_full_table(scores: List[AssetScore]):
-    """渲染完整评分表"""
-    rows = []
-    for s in scores:
-        cfg = OPP_CONFIG.get(s.opportunity, OPP_CONFIG[OPPORTUNITY_NEUTRAL])
-        rows.append({
-            "机会": cfg["label"],
-            "资产": s.name,
-            "代码": s.symbol,
-            "趋势分": s.trend_score,
-            "回归分": s.reversion_score,
-            "风险分": s.risk_score,
-            "动量": s.momentum,
-            "RSI": s.rsi,
-            "均线": s.ma_alignment,
-            "1月%": s.ret_1m,
-            "3月%": s.ret_3m,
-            "回撤%": s.current_drawdown,
-            "波动率%": s.volatility,
-            "信号": s.summary,
-        })
-
+    """完整明细表（结论之后的附录）。"""
+    rows = [_score_row(s) for s in scores]
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
     with st.expander("  指标说明", expanded=False):
         st.markdown(
-            f"- **趋势分**: {TREND_SCORE.split(chr(10))[1]}\n"
-            f"- **回归分**: {REVERSION_SCORE.split(chr(10))[1]}\n"
-            f"- **风险分**: {RISK_SCORE.split(chr(10))[1]}\n"
-            f"- **动量**: {MOMENTUM_SCORE.split(chr(10))[1]}\n"
-            f"- **RSI**: {RSI.split(chr(10))[1]}\n"
-            f"- **均线**: {MA_ALIGNMENT.split(chr(10))[1]}\n"
-            f"- **回撤%**: {DRAWDOWN.split(chr(10))[1]}\n"
-            f"- **波动率%**: {VOLATILITY.split(chr(10))[1]}\n"
-            f"- **1月%/3月%**: {RETURN_1M.split(chr(10))[1]}"
+            f"- **12M%**: 过去 12 个月涨幅。>{ABS_MOMENTUM_MIN_PCT:.0f}% 才有资格买入（生产策略门槛）\n"
+            f"- **过门槛**: 12M 涨幅是否超过 {ABS_MOMENTUM_MIN_PCT:.0f}%\n"
+            f"- **动量排名**: 12M 涨幅在全宇宙中的排名，前 {TOP_N} 名可进组合\n"
+            f"- **参考仓位**: 1/2 凯利估算，单票顶 20%；波动率只影响仓位，不淘汰标的\n"
+            f"- **回撤%**: 当前价距历史高点的回撤{tip_icon(DRAWDOWN)}\n"
+            f"- **波动率%**: 年化波动率{tip_icon(VOLATILITY)}\n"
+            f"- **1月%/3月%**: 近 1 月/3 月收益{tip_icon(RETURN_1M)}"
         )

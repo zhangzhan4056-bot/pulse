@@ -478,7 +478,48 @@ def main():
         filter_start = st.date_input("开始日期", value=None, key="filter_start")
         filter_end = st.date_input("结束日期", value=None, key="filter_end")
 
-    # ── 统计概览 ──────────────────────────────────────────────
+    # ── 一句话结论（近 30 天）——结论先行 ─────────────────
+    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    recent = storage.load_filtered(start_date=month_ago)
+
+    if recent is not None and not recent.empty:
+        n = len(recent)
+        dirs = recent["signal_direction"].value_counts().to_dict()
+        bull = dirs.get("bullish", 0)
+        bear = dirs.get("bearish", 0)
+        # 主资产
+        asset_counts = {}
+        for _, row in recent.iterrows():
+            asset = _extract_primary_asset(row["affected_assets"])
+            if asset and asset != "OTHER":
+                asset_counts[asset] = asset_counts.get(asset, 0) + 1
+        top_assets = sorted(asset_counts.items(), key=lambda x: -x[1])[:3]
+        asset_str = "、".join(f"{a}({c})" for a, c in top_assets) if top_assets else "—"
+        latest = recent.sort_values("date", ascending=False).iloc[0]
+        latest_dir = DIRECTIONS.get(latest["signal_direction"], DIRECTIONS["neutral"])
+
+        if bull > bear * 2:
+            tone, bg, border, color = "偏多", "#e8f5e9", "#4caf50", "#2e7d32"
+        elif bear > bull * 2:
+            tone, bg, border, color = "偏空", "#ffebee", "#ef5350", "#c62828"
+        else:
+            tone, bg, border, color = "多空交织", "#f5f5f5", "#9e9e9e", "#555"
+
+        st.markdown(
+            f'<div style="padding:0.85rem 1.1rem;background:{bg};border-left:5px solid {border};'
+            f'border-radius:0 0.45rem 0.45rem 0;margin:0.5rem 0 0.8rem 0;">'
+            f'<div style="font-size:1.15rem;font-weight:700;color:{color};">'
+            f'近 30 天 {n} 条信号 · {tone}（看涨 {bull} / 看跌 {bear}）</div>'
+            f'<div style="color:#555;margin-top:0.35rem;font-size:0.92rem;">'
+            f'主资产：{asset_str}　|　最新：{latest["date"]} {latest["speaker"]} '
+            f'{latest_dir["icon"]} {latest_dir["label"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("近 30 天无新信号。可从侧边栏拉取 SEC EDGAR / 导入 PTR。")
+
+    # ── 统计概览（明细）───────────────────────────────────────
     stats = storage.get_stats()
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("总信号数", stats["total"])

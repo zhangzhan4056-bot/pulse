@@ -315,11 +315,12 @@ class BacktestEngine:
                 if len(spy_available) > 0:
                     spy_period_start_price = spy_available.iloc[-1]
 
-            # 策略计算目标权重
+            # 策略计算目标权重（按策略宇宙过滤，避免个股数据污染 ETF 策略）
+            allowed = set(strategy.get_all_symbols()) if hasattr(strategy, "get_all_symbols") else None
             data_window = {
                 sym: df[df["date"] <= rebal_date]
                 for sym, df in all_data.items()
-                if not df.empty
+                if not df.empty and (allowed is None or sym in allowed)
             }
             try:
                 new_weights = strategy.generate_weights(rebal_date, data_window)

@@ -320,9 +320,59 @@ def refresh_all_data(dm: DataManager, progress_bar) -> dict:
     return results
 
 
+def _render_overview_strip(dm: DataManager):
+    """页面顶部总览 — 结论先行：关键资产方向 + 热门行业。"""
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+
+    key_assets = [
+        ("SPY", "标普500"), ("QQQ", "纳指100"), ("000300", "沪深300"),
+        ("399813", "半导体"), ("TLT", "国债"), ("GLD", "黄金"),
+    ]
+
+    st.subheader("  一眼总览")
+    cols = st.columns(len(key_assets))
+    for col, (symbol, label) in zip(cols, key_assets):
+        df = dm.load(symbol, start_date, end_date)
+        with col:
+            if df.empty or len(df) < 2:
+                st.caption(f"{label}: 暂无数据")
+                continue
+            close = df["close"]
+            ret = float(close.iloc[-1] / close.iloc[0] - 1.0) * 100
+            mom = calc_momentum_score(close)
+            color = "#ef5350" if ret >= 0 else "#26a69a"
+            st.markdown(
+                f'<div style="text-align:center;padding:0.55rem;background:#fafafa;border-radius:0.4rem;">'
+                f'<div style="font-size:0.8rem;color:#666;">{label}</div>'
+                f'<div style="font-size:1.15rem;font-weight:700;color:{color};">{ret:+.1f}%</div>'
+                f'<div style="font-size:0.75rem;color:#888;">4月 · 动量 {mom:.0f}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # 行业冷热一句话
+    heat_items = []
+    for symbol, name in list(US_SECTORS_SYMBOLS.items()) + [
+        ("399813", "半导体"), ("399986", "银行"), ("399989", "医疗"),
+        ("000932", "消费"), ("399396", "有色"), ("399809", "煤炭"),
+        ("399393", "地产"),
+    ]:
+        df = dm.load(symbol, start_date, end_date)
+        if df.empty or len(df) < 30:
+            continue
+        heat_items.append((name, calc_momentum_score(df["close"])))
+
+    if heat_items:
+        heat_items.sort(key=lambda x: -x[1])
+        hot = "、".join(n for n, _ in heat_items[:3])
+        cold = "、".join(n for n, _ in heat_items[-2:])
+        st.info(f"**行业冷热**：最热 {hot}　|　最弱 {cold}（按动量评分）")
+
+
 def main():
     st.title("  市场全景")
-    st.caption("大类资产实时行情与走势")
+    st.caption("大类资产实时行情与走势 · 先看总览，再看明细")
 
     dm = get_data_manager()
     macro_storage = get_macro_storage()
@@ -410,7 +460,14 @@ def main():
         st.caption(f"页面加载时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
     # ============================================================
-    # 宏观观测（顶部）
+    # 一眼总览（结论）
+    # ============================================================
+    if not db_empty:
+        _render_overview_strip(dm)
+        st.divider()
+
+    # ============================================================
+    # 宏观观测
     # ============================================================
     st.subheader("  宏观观测", help=MACRO_SIMILARITY)
     st.caption("通过对比当前宏观环境与历史相似时期，预判后续市场走势")
@@ -595,13 +652,14 @@ def main():
     st.divider()
 
     # ============================================================
-    # A股主要指数
+    # A股：宽基 + 行业
     # ============================================================
-    st.subheader("  A股主要指数")
-
+    st.subheader("  A股宽基指数")
+    cn_broad = ["399006", "000688", "000300"]
     try:
-        cols = st.columns(len(CN_SYMBOLS))
-        for col, (symbol, name) in zip(cols, CN_SYMBOLS.items()):
+        cols = st.columns(len(cn_broad))
+        for col, symbol in zip(cols, cn_broad):
+            name = CN_SYMBOLS.get(symbol, symbol)
             with col:
                 data = get_asset_data_with_history(symbol, name, days=90)
                 if data:
@@ -614,9 +672,32 @@ def main():
                     )
                 else:
                     st.warning(f"{name}: 暂无数据")
-
     except Exception as e:
         st.error(f"A股数据获取失败: {e}")
+
+    st.subheader("  A股行业指数")
+    cn_industry = [
+        "399813", "399986", "399989", "000932",
+        "399396", "399809", "399393",
+    ]
+    try:
+        cols = st.columns(len(cn_industry))
+        for col, symbol in zip(cols, cn_industry):
+            name = CN_SYMBOLS.get(symbol, symbol)
+            with col:
+                data = get_asset_data_with_history(symbol, name, days=90)
+                if data:
+                    render_asset_card(
+                        data["desc"],
+                        data["price"],
+                        data["change_pct"],
+                        symbol,
+                        sparkline_df=data["history"],
+                    )
+                else:
+                    st.warning(f"{name}: 暂无数据")
+    except Exception as e:
+        st.error(f"A股行业数据获取失败: {e}")
 
     st.divider()
 
@@ -647,16 +728,22 @@ def main():
     st.divider()
 
     # ============================================================
-    # 美股板块热度
+    # 行业热度（美股板块 + A股行业）
     # ============================================================
-    st.subheader("  美股板块热度", help="按动量评分排序的美股板块 ETF，动量越高表示近期趋势越强")
+    st.subheader("  行业热度", help="美股板块 ETF + A股行业指数，按动量评分排序")
 
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 
+        heat_universe = [
+            *[(s, f"美·{n}") for s, n in US_SECTORS_SYMBOLS.items()],
+            ("399813", "A·半导体"), ("399986", "A·银行"), ("399989", "A·医疗"),
+            ("000932", "A·消费"), ("399396", "A·有色"), ("399809", "A·煤炭"),
+            ("399393", "A·地产"),
+        ]
         sector_data = []
-        for symbol, name in US_SECTORS_SYMBOLS.items():
+        for symbol, name in heat_universe:
             df = dm.load(symbol, start_date, end_date)
             if not df.empty:
                 score = calc_momentum_score(df["close"])

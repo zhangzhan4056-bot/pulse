@@ -49,6 +49,10 @@ class ScanHistory:
             {
                 "symbol": s.symbol,
                 "name": s.name,
+                "ret_12m": s.ret_12m,
+                "passes_threshold": s.passes_threshold,
+                "momentum_rank": s.momentum_rank,
+                "kelly_weight": s.kelly_weight,
                 "trend_score": s.trend_score,
                 "reversion_score": s.reversion_score,
                 "risk_score": s.risk_score,

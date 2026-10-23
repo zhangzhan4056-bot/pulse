@@ -67,7 +67,7 @@ def format_shares(s):
 # ── Tab 1: 持仓概览 ──────────────────────────────────────────
 
 def render_overview(storage):
-    """持仓概览"""
+    """持仓概览 — 先共识结论，再各机构明细"""
     managers = storage.get_tracked_managers()
     if managers.empty:
         st.info("暂无持仓数据，请先点击侧边栏「更新最新持仓」")
@@ -113,6 +113,24 @@ def render_overview(storage):
             .sort_values("total_value", ascending=False)
             .head(15)
         )
+
+        # 先给结论
+        if not issuer_summary.empty:
+            high = issuer_summary[issuer_summary["count"] >= 3]
+            top3 = issuer_summary.head(3)
+            top3_str = "、".join(
+                f"{idx}（{row['count']}家）" for idx, row in top3.iterrows()
+            )
+            if not high.empty:
+                st.success(
+                    f"**共识结论**：{len(selected)} 家机构 Top5 交叉出 {len(issuer_summary)} 个重仓标的，"
+                    f"其中 **{len(high)} 个高共识（≥3 家）**。最重：{top3_str}"
+                )
+            else:
+                st.info(
+                    f"**共识结论**：{len(selected)} 家机构 Top5 交叉出 {len(issuer_summary)} 个重仓标的，"
+                    f"暂无 ≥3 家高共识。最重：{top3_str}"
+                )
 
         st.markdown("#### 共识重仓标的（多家机构 Top 5 交叉）")
         if not issuer_summary.empty:
@@ -202,7 +220,7 @@ def render_overview(storage):
 # ── Tab 2: 增持信号 ──────────────────────────────────────────
 
 def render_accumulation(storage):
-    """增持信号检测"""
+    """增持信号检测 — 先结论，后明细"""
     st.caption("连续季度持股数↑ 且 仓位占比↑ 的资产，表明机构在主动加仓")
 
     col1, col2 = st.columns(2)
@@ -223,35 +241,34 @@ def render_accumulation(storage):
         st.info(f"无满足条件（≥{min_managers} 家机构）的增持信号")
         return
 
-    # ── 概览指标 ──
-    st.markdown(
-        f'<div style="padding:0.8rem 1rem;background:#e8f5e9;border-left:5px solid #4caf50;'
-        f'border-radius:0 0.5rem 0.5rem 0;margin-bottom:1rem;">'
-        f'<span style="font-weight:bold;color:#2e7d32;font-size:1.1rem;">'
-        f'  {len(signals)} 个资产被连续增持</span>'
-        f'<span style="color:#555;margin-left:0.5rem;">'
-        f'（最近 {lookback} 个季度，至少 {min_managers} 家机构）</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── 概括性结论 ──
-    # 板块分布
+    # ── 结论先行：一句话 + 板块 + 高共识 ──
     from scripts.daily_sync import _classify_sector
     sector_counts = {}
     for _, row in signals.iterrows():
         sec = _classify_sector(row["name_of_issuer"])
         if sec:
             sector_counts[sec] = sector_counts.get(sec, 0) + 1
-    if sector_counts:
-        sorted_secs = sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)
-        secs_str = "、".join(f"{s}({c})" for s, c in sorted_secs[:5])
-        st.markdown(f"**板块分布:** {secs_str}")
+    sorted_secs = sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)
+    secs_str = "、".join(f"{s}({c})" for s, c in sorted_secs[:5]) if sorted_secs else "—"
 
-    # 高共识信号（≥3 家机构）
     high_consensus = signals[signals["manager_count"] >= 3]
+    top_names = "、".join(signals.head(3)["name_of_issuer"].tolist())
+
     if not high_consensus.empty:
-        st.markdown(f"**高共识标的（≥3 家机构连续增持）:** {len(high_consensus)} 个")
+        st.success(
+            f"**结论**：最近 {lookback} 个季度 **{len(signals)} 个资产被连续增持**"
+            f"（≥{min_managers} 家），其中 **{len(high_consensus)} 个 ≥3 家高共识**。"
+            f"重点看 **{top_names}**。板块分布：{secs_str}"
+        )
+    else:
+        st.info(
+            f"**结论**：最近 {lookback} 个季度 **{len(signals)} 个资产被连续增持**"
+            f"（≥{min_managers} 家），暂无 ≥3 家高共识。最重：**{top_names}**。"
+            f"板块分布：{secs_str}"
+        )
+
+    if not high_consensus.empty:
+        st.markdown("**高共识标的（≥3 家）**")
         for _, row in high_consensus.head(8).iterrows():
             st.markdown(
                 f"- **{row['name_of_issuer']}** — {row['manager_count']}家 "
@@ -526,6 +543,41 @@ def main():
     # ── 标题 ──
     st.title("  机构持仓跟踪")
     st.caption("SEC EDGAR 13-F 季度报告解析 · 顶级机构持仓变动 · 连续增持信号检测")
+
+    # ── 总览结论（tabs 之前）────────────────────────────────
+    try:
+        acc = storage.get_accumulation_signals(lookback_quarters=4)
+        mgr_stats = storage.get_manager_stats()
+        periods = []
+        managers = storage.get_tracked_managers()
+        for _, mgr in managers.head(8).iterrows():
+            p = storage.load_periods(mgr["cik"])
+            if p:
+                periods.append(p[0])
+        latest_period = max(periods) if periods else "未知"
+        acc_n = len(acc) if acc is not None and not acc.empty else 0
+        high_n = 0
+        top_names = ""
+        if acc is not None and not acc.empty:
+            high = acc[acc["manager_count"] >= 3]
+            high_n = len(high)
+            top_names = "、".join(acc.head(3)["name_of_issuer"].tolist())
+
+        if acc_n > 0:
+            st.success(
+                f"**结论**：最新报告期 **{latest_period}**，"
+                f"跟踪 {mgr_stats['managers']} 家机构 / {mgr_stats['holdings']} 条持仓；"
+                f"**{acc_n} 个标的被连续增持**（其中 {high_n} 个 ≥3 家高共识），"
+                f"重点看 **{top_names}**。"
+            )
+        else:
+            st.info(
+                f"**结论**：最新报告期 **{latest_period}**，"
+                f"跟踪 {mgr_stats['managers']} 家机构 / {mgr_stats['holdings']} 条持仓；"
+                f"暂无多季度连续增持信号（需至少 2 个季度数据）。"
+            )
+    except Exception:
+        st.caption("总览结论生成失败，可直接看下方明细")
 
     # ── Tabs ──
     tabs = st.tabs(["  持仓概览", "  增持信号", "  机构对比", "  管理人列表"])

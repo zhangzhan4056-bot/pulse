@@ -2,6 +2,7 @@
 
 双轨复盘：机会扫描（P2）+ 策略回测（P3）的历史决策质量评估。
 回答"P2 的分类准不准"和"P3 推荐的策略跑赢了吗"两个核心问题。
+当前市场体制与策略推荐在 P2 顶部 / 主页，本页不重复展示。
 """
 
 import sys
@@ -10,16 +11,16 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.data.config import STRATEGY_UNIVERSE
+from core.data.config import STRATEGY_UNIVERSE, GROWTH_UNIVERSE
 from core.data.manager import DataManager
 from core.scanner.scorer import (
     score_all_assets,
-    AssetScore,
     OPPORTUNITY_TREND_BUY,
     OPPORTUNITY_TREND_WATCH,
     OPPORTUNITY_MEAN_REVERSION,
@@ -30,33 +31,33 @@ from core.scanner.history import ScanHistory
 from core.backtest.engine import BacktestEngine, BacktestResult
 from core.strategy.strategies import (
     TrendFollowingStrategy,
+    TimeSeriesMomentumStrategy,
+    CTABreakoutStrategy,
+    MomentumChandelierStrategy,
     RiskParityStrategy,
     MinCorrelationStrategy,
     DualMomentumStrategy,
-    DualMomentum6MStrategy,
-    DualMomentum3MStrategy,
-    MomentumVolFilterStrategy,
-    DrawdownControlStrategy,
+    DualMomentumKellyStrategy,
+    DualMomentumKellyFilterStrategy,
+    StockMomentumGrowthStrategy,
+    QQQBuyHoldStrategy,
+    SPYBuyHoldStrategy,
+    DualMomentumKellyCTASleeveStrategy,
+    DualMomentumKellyHedgeSleeveStrategy,
     AntifragileStrategy,
     AntifragileAggressiveStrategy,
     AntifragileWeeklyStrategy,
     AntifragileDailyStrategy,
     TailRiskParityStrategy,
     DrawdownConstraintStrategy,
-    RegimeSwitchingStrategy,
-    STRATEGY_CATEGORIES,
 )
-from core.strategy.indicators import detect_market_regime, calc_regime_score
-from core.strategy.regime_config import (
-    REGIME_COLORS,
-    REGIME_RECOMMENDATIONS,
-)
+from core.strategy.indicators import detect_market_regime, calc_regime_score, calc_drawdown
+from core.strategy.regime_config import REGIME_COLORS
 from app.components.tooltips import (
-    COMPOSITE_SCORE, MARKET_REGIME, VOL_REGIME, HIT_RATE, REGRET_RATE,
-    PROFIT_LOSS_RATIO, STRATEGY_HIT_RATE, FORWARD_RETURN,
+    HIT_RATE, REGRET_RATE,
+    PROFIT_LOSS_RATIO, STRATEGY_HIT_RATE,
     ANNUAL_RETURN, TOTAL_RETURN, MAX_DRAWDOWN, SHARPE_RATIO,
-    VOLATILITY, WIN_RATE, TREND_SCORE, REVERSION_SCORE, RISK_SCORE,
-    tip_icon,
+    VOLATILITY, WIN_RATE,
 )
 
 
@@ -86,12 +87,45 @@ HORIZON_OPTIONS = {
     "3 个月": 90,
 }
 
+# 生产策略 = P3/月报/调仓单实际在用的那一个。P4 的「推荐」一律指它，
+# 不能拿夏普榜第一当推荐——低波底仓（风险平价）会系统性霸榜。
+PRODUCTION_STRATEGY_NAME = "成长动量·个股"
+
+# 角色标注：让「谁更好」不再被夏普误导
+_STRATEGY_ROLES = {
+    "成长动量·个股": "生产主策略",
+    "满仓QQQ长期持有": "基准",
+    "满仓SPY长期持有": "基准",
+    "凯利·门槛8%": "前生产策略",
+    "双动量×凯利": "主策略同源",
+    "凯利·70/30 CTA": "主+卫星拼盘",
+    "凯利·70/30 反脆弱": "主+对冲拼盘",
+    "风险平价策略": "底仓",
+    "低相关性组合策略": "底仓",
+    "尾部风险平价": "底仓+尾部对冲",
+    "TSMOM 趋势跟随": "趋势底仓",
+    "趋势跟踪策略": "趋势底仓",
+    "CTA 突破跟随": "卫星",
+    "动量吊灯跟随": "卫星",
+    "双动量策略": "对照（等权）",
+    "回撤约束优化": "对照（约束版）",
+    "反脆弱策略": "对冲实验",
+    "反脆弱激进版": "对冲实验",
+    "反脆弱周频版": "对冲实验",
+    "反脆弱日频版": "对冲实验",
+    "SPY 买入持有": "基准",
+}
+
+
+def _strategy_role(name: str) -> str:
+    return _STRATEGY_ROLES.get(name, "其他")
+
 OPP_CONFIG = {
-    OPPORTUNITY_TREND_BUY: {"label": "趋势买入", "icon": " ", "color": "#2e7d32", "bg": "#e8f5e9", "border": "#4caf50"},
-    OPPORTUNITY_TREND_WATCH: {"label": "趋势关注", "icon": " ", "color": "#1565c0", "bg": "#e3f2fd", "border": "#42a5f5"},
-    OPPORTUNITY_MEAN_REVERSION: {"label": "均值回归", "icon": " ", "color": "#6a1b9a", "bg": "#f3e5f5", "border": "#ab47bc"},
-    OPPORTUNITY_AVOID: {"label": "建议规避", "icon": " ", "color": "#c62828", "bg": "#ffebee", "border": "#ef5350"},
-    OPPORTUNITY_NEUTRAL: {"label": "中性", "icon": "—", "color": "#757575", "bg": "#fafafa", "border": "#bdbdbd"},
+    OPPORTUNITY_TREND_BUY: {"label": "过门槛", "icon": " ", "color": "#2e7d32", "bg": "#e8f5e9", "border": "#4caf50"},
+    OPPORTUNITY_TREND_WATCH: {"label": "门槛附近", "icon": " ", "color": "#1565c0", "bg": "#e3f2fd", "border": "#42a5f5"},
+    OPPORTUNITY_MEAN_REVERSION: {"label": "旧·均值回归", "icon": " ️", "color": "#6a1b9a", "bg": "#f3e5f5", "border": "#ab47bc"},
+    OPPORTUNITY_AVOID: {"label": "不碰", "icon": " ", "color": "#c62828", "bg": "#ffebee", "border": "#ef5350"},
+    OPPORTUNITY_NEUTRAL: {"label": "数据不足", "icon": "—", "color": "#757575", "bg": "#fafafa", "border": "#bdbdbd"},
 }
 
 
@@ -103,7 +137,8 @@ def _load_all_assets(dm: DataManager, days: int = 365) -> Dict[str, pd.DataFrame
     """加载全部资产数据"""
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    all_symbols = STRATEGY_UNIVERSE
+    all_symbols = dict(STRATEGY_UNIVERSE)
+    all_symbols.update(GROWTH_UNIVERSE)
     data = {}
     for symbol in all_symbols:
         df = dm.load(symbol, start_date, end_date)
@@ -323,24 +358,74 @@ def backtest_opportunities(
 # ============================================================
 
 def _get_all_strategies():
-    """获取全部策略实例"""
+    """获取在产策略实例（退役策略不进复盘排名）"""
     return [
         TrendFollowingStrategy(),
+        TimeSeriesMomentumStrategy(),
+        CTABreakoutStrategy(),
+        MomentumChandelierStrategy(),
+        DualMomentumStrategy(),
+        DualMomentumKellyStrategy(),
+        DualMomentumKellyFilterStrategy(),
+        StockMomentumGrowthStrategy(),
+        QQQBuyHoldStrategy(),
+        SPYBuyHoldStrategy(),
+        DualMomentumKellyCTASleeveStrategy(),
+        DualMomentumKellyHedgeSleeveStrategy(),
         RiskParityStrategy(),
         MinCorrelationStrategy(),
-        DualMomentumStrategy(),
-        DualMomentum6MStrategy(),
-        DualMomentum3MStrategy(),
-        MomentumVolFilterStrategy(),
-        DrawdownControlStrategy(),
+        TailRiskParityStrategy(),
+        DrawdownConstraintStrategy(),
         AntifragileStrategy(),
         AntifragileAggressiveStrategy(),
         AntifragileWeeklyStrategy(),
         AntifragileDailyStrategy(),
-        TailRiskParityStrategy(),
-        DrawdownConstraintStrategy(),
-        RegimeSwitchingStrategy(),
     ]
+
+
+def _spy_benchmark_result(spy_df: pd.DataFrame, start_date: str,
+                          end_date: str) -> Optional[BacktestResult]:
+    """构造「SPY 买入持有」基准结果，让跑赢对比有对手。
+
+    full_results 里没有这一行时，页面只能显示「样本不足」。
+    """
+    if spy_df is None or spy_df.empty:
+        return None
+    df = spy_df.copy()
+    df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+    if len(df) < 2:
+        return None
+    df = df.sort_values("date").reset_index(drop=True)
+    equity = df.set_index("date")["close"].astype(float)
+    equity = equity / equity.iloc[0]
+    daily_returns = equity.pct_change().dropna()
+    drawdown_curve = calc_drawdown(equity)
+
+    total_return = (equity.iloc[-1] / equity.iloc[0] - 1) * 100
+    years = len(daily_returns) / 252
+    if years > 0 and equity.iloc[0] > 0:
+        annualized = ((equity.iloc[-1] / equity.iloc[0]) ** (1 / years) - 1) * 100
+    else:
+        annualized = 0.0
+    annual_vol = float(daily_returns.std() * np.sqrt(252) * 100) if len(daily_returns) else 0.0
+    sharpe = ((annualized / 100 - 0.03) / (annual_vol / 100)) if annual_vol > 0 else 0.0
+    monthly = daily_returns.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+    win_rate = float((monthly > 0).sum() / len(monthly) * 100) if len(monthly) else 0.0
+
+    return BacktestResult(
+        strategy_name="SPY 买入持有",
+        equity_curve=equity,
+        drawdown_curve=drawdown_curve,
+        daily_returns=daily_returns,
+        total_return=round(float(total_return), 2),
+        annualized_return=round(float(annualized), 2),
+        max_drawdown=round(float(drawdown_curve.min() * 100), 2),
+        sharpe_ratio=round(float(sharpe), 2),
+        volatility=round(annual_vol, 2),
+        win_rate=round(win_rate, 1),
+        num_rebalances=0,
+        weight_history=pd.DataFrame(),
+    )
 
 
 def backtest_strategy_rankings(
@@ -356,7 +441,8 @@ def backtest_strategy_rankings(
         - full_results: List[BacktestResult] 全量回测结果（用于 1 年表现总览）
         - sample_results: List[Dict] 每个采样点的排名评估
     """
-    all_symbols = STRATEGY_UNIVERSE
+    all_symbols = dict(STRATEGY_UNIVERSE)
+    all_symbols.update(GROWTH_UNIVERSE)
 
     # 加载数据（多取 400 天给策略回望）
     end_date = datetime.now()
@@ -364,13 +450,26 @@ def backtest_strategy_rankings(
     data_end = end_date.strftime("%Y-%m-%d")
 
     all_data = {}
+    missing = []
     for symbol in all_symbols:
         df = dm.load(symbol, data_start, data_end)
         if not df.empty:
             all_data[symbol] = df
+        else:
+            missing.append(symbol)
 
-    if not all_data or "SPY" not in all_data:
-        return {"full_results": [], "sample_results": []}
+    if not all_data:
+        return {
+            "full_results": [], "sample_results": [],
+            "data_error": "no_data",
+            "missing_symbols": missing,
+        }
+    if "SPY" not in all_data:
+        return {
+            "full_results": [], "sample_results": [],
+            "data_error": "no_spy",
+            "missing_symbols": missing,
+        }
 
     # 获取最新数据日期
     latest_str = max(
@@ -408,6 +507,11 @@ def backtest_strategy_rankings(
 
     results_list = engine.run_comparison(strategies, all_data, data_start, data_end)
 
+    # 把「SPY 买入持有」塞进对比列表，否则跑赢结论没有对手
+    spy_bench = _spy_benchmark_result(all_data["SPY"], data_start, data_end)
+    if spy_bench is not None:
+        results_list.append(spy_bench)
+
     progress_bar.progress(0.5, text="分析策略排名...")
 
     # 构建 SPY 基准净值曲线
@@ -439,6 +543,9 @@ def backtest_strategy_rankings(
 
         rankings = []
         for r in results_list:
+            # SPY 只做基准，不进推荐榜
+            if "SPY" in r.strategy_name:
+                continue
             equity = r.equity_curve
             dates_before = equity.index[equity.index <= sample_date]
             if len(dates_before) < 21:
@@ -474,13 +581,19 @@ def backtest_strategy_rankings(
             continue
 
         rankings.sort(key=lambda x: x["sharpe_est"], reverse=True)
-        recommended = rankings[0]["name"]
+        # 「推荐」= 生产策略，不是夏普第一。夏普第一常被低波底仓（风险平价）占走。
+        prod_entry = next(
+            (x for x in rankings if x["name"] == PRODUCTION_STRATEGY_NAME), None
+        )
+        recommended = PRODUCTION_STRATEGY_NAME if prod_entry else rankings[0]["name"]
+        rec_entry = prod_entry or rankings[0]
 
         sample_results.append({
             "date": sample_date,
             "regime": regime_name,
             "composite": composite,
             "recommended": recommended,
+            "recommended_entry": rec_entry,
             "rankings": rankings,
         })
 
@@ -533,12 +646,13 @@ def _bucket_hit(bucket_data: Dict, bucket_key: str) -> Optional[float]:
 def _generate_opportunity_suggestions(results: List[Dict]) -> List[Dict]:
     """基于评分区间命中率分析，生成 P2 参数优化建议"""
 
-    # 按评分区间分桶
+    # 按评分区间分桶（标签须与 _bucket_hit 查询键一致）
     def bucket(score, bins=(30, 50, 70, 90)):
+        labels = ["<30", "30-50", "50-70", "70-90", ">=90"]
         for i, b in enumerate(bins):
             if score < b:
-                return f"<{b}"
-        return f">={bins[-1]}"
+                return labels[i]
+        return labels[-1]
 
     # 按机会类型 + 评分维度聚合
     # 结构: {opp_type: {dim: {bucket: {correct, total, returns}}}}
@@ -564,24 +678,24 @@ def _generate_opportunity_suggestions(results: List[Dict]) -> List[Dict]:
 
     suggestions = []
 
-    # 分析 trend_score 区间对趋势买入命中率的影响
+    # 分析 trend_score 区间对过门槛命中率的影响（生产口径 12M>8%）
     trend_data = agg.get(OPPORTUNITY_TREND_BUY, {}).get("trend_score", {})
     if trend_data:
-        low_hit = _bucket_hit(trend_data, "<50")
+        low_hit = _bucket_hit(trend_data, "30-50")
         mid_hit = _bucket_hit(trend_data, "50-70")
         high_hit = _bucket_hit(trend_data, "70-90")
         if low_hit is not None and high_hit is not None and high_hit - low_hit > 15:
             suggestions.append({
-                "parameter": "趋势买入 trend_score 阈值",
+                "parameter": "过门槛 trend_score 阈值",
                 "priority": "高",
-                "summary": f"高评分(≥70)命中率 {high_hit:.0f}% 远高于低评分(<50)的 {low_hit:.0f}%",
-                "problem": "当前趋势买入可能纳入了低评分资产，拉低整体命中率",
-                "suggestion": "提高趋势买入的 trend_score 最低阈值到 60-70，过滤掉弱趋势信号",
+                "summary": f"高评分(≥70)命中率 {high_hit:.0f}% 远高于低评分(30-50)的 {low_hit:.0f}%",
+                "problem": "过门槛候选里混入了低评分资产，拉低整体命中率",
+                "suggestion": "在 12M>8% 之上再加 trend_score≥60 确认，过滤弱趋势",
                 "reason": f"评分区间差异 {high_hit - low_hit:.0f}pp，阈值提升可显著提高信号质量",
             })
         elif low_hit is not None and mid_hit is not None and low_hit > mid_hit:
             suggestions.append({
-                "parameter": "趋势买入 trend_score 阈值",
+                "parameter": "过门槛 trend_score 阈值",
                 "priority": "低",
                 "summary": "评分与命中率关系不显著，当前阈值可能已合理",
                 "problem": f"低评分命中率 {low_hit:.0f}% 反而高于中评分 {mid_hit:.0f}%",
@@ -605,28 +719,45 @@ def _generate_opportunity_suggestions(results: List[Dict]) -> List[Dict]:
                     "reason": "只有高风险资产才应触发规避，中等风险应降级为中性或关注",
                 })
 
-    # 分析 reversion_score 对均值回归的影响
-    mr_data = agg.get(OPPORTUNITY_MEAN_REVERSION, {}).get("reversion_score", {})
-    if mr_data:
-        high_rev = _bucket_hit(mr_data, ">=90")
-        mid_rev = _bucket_hit(mr_data, "70-90")
-        low_rev = _bucket_hit(mr_data, "<50")
-        if high_rev is not None and mid_rev is not None and high_rev > mid_rev + 10:
-            suggestions.append({
-                "parameter": "均值回归 reversion_score 阈值",
-                "priority": "中",
-                "summary": f"高回归分(≥90)命中率 {high_rev:.0f}% 远高于中分(70-90)的 {mid_rev:.0f}%",
-                "problem": "低分均值回归信号可能是噪音",
-                "suggestion": "提高均值回归触发阈值到 80+，只在明确超卖时才触发",
-                "reason": "均值回归需要更极端的超卖才有统计优势",
-            })
+    # 旧·均值回归只做历史对照，不给生产优化建议（不在机会轴）
 
     priority_order = {"高": 0, "中": 1, "低": 2}
     suggestions.sort(key=lambda s: priority_order.get(s["priority"], 9))
     return suggestions
 
 
-def render_opportunity_review(results: List[Dict]):
+def _render_hit_rate_explainer(horizon_days: int = 30):
+    """白话解释命中率怎么算 — 贴在指标卡上方，不埋进 expander。"""
+    horizon_label = next(
+        (k for k, v in HORIZON_OPTIONS.items() if v == horizon_days),
+        f"{horizon_days} 日",
+    )
+    st.markdown("**命中率怎么读**")
+    cols = st.columns(3)
+    rules = [
+        (cols[0], "说过门槛（买）", "后来涨了 = 说对", "买对了几次 / 一共说了几次买", "#2e7d32", "#e8f5e9", "#4caf50"),
+        (cols[1], "说门槛附近（等）", f"后来没跌超 5% = 说对", "等对了几次 / 一共说了几次等", "#1565c0", "#e3f2fd", "#42a5f5"),
+        (cols[2], "说不碰（躲）", "后来跑输 SPY = 说对", "躲对了几次 / 一共说了几次躲", "#c62828", "#ffebee", "#ef5350"),
+    ]
+    for col, title, rule, formula, color, bg, border in rules:
+        with col:
+            st.markdown(
+                f'<div style="padding:0.75rem 0.9rem;background:{bg};border-radius:0.45rem;'
+                f'border-top:3px solid {border};height:100%;">'
+                f'<div style="font-weight:700;color:{color};font-size:0.95rem;">{title}</div>'
+                f'<div style="font-size:1.05rem;font-weight:700;color:#222;margin:0.3rem 0;">{rule}</div>'
+                f'<div style="font-size:0.82rem;color:#666;">{formula}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    st.caption(
+        f"一句话：**说对的比例就是命中率**。每条信号看 {horizon_label} 后的实际表现；"
+        "「不碰」的对照物是同期 SPY（大盘），不是绝对涨跌。"
+        "随机瞎猜大约 50%——过门槛持续高于 55% 才算真有效。"
+    )
+
+
+def render_opportunity_review(results: List[Dict], horizon_days: int = 30):
     """渲染机会扫描复盘结果"""
     st.subheader("  机会扫描复盘")
     st.caption("P2 说的趋势买入，后来真的涨了吗？规避的后来跌了吗？")
@@ -658,11 +789,40 @@ def render_opportunity_review(results: List[Dict]):
         st.info("无非中性信号可评估")
         return
 
-    # ---- 4 个指标卡 ----
-    cols = st.columns(4)
+    # ---- 白话口径（先解释怎么读，再给数字）----
+    _render_hit_rate_explainer(horizon_days)
+
+    # ---- 一句话结论 ----
+    buy = by_opp.get(OPPORTUNITY_TREND_BUY)
+    near = by_opp.get(OPPORTUNITY_TREND_WATCH)
+    avoid = by_opp.get(OPPORTUNITY_AVOID)
+    buy_hit = (buy["correct"] / buy["total"] * 100) if buy and buy["total"] else None
+    avoid_hit = (avoid["correct"] / avoid["total"] * 100) if avoid and avoid["total"] else None
+    parts = []
+    if buy_hit is not None:
+        parts.append(f"说「买」的 {buy_hit:.0f}% 说对了（{buy['total']} 条）")
+    if near and near["total"]:
+        near_hit = near["correct"] / near["total"] * 100
+        parts.append(f"说「等」的 {near_hit:.0f}% 说对了")
+    if avoid_hit is not None:
+        parts.append(f"说「躲」的 {avoid_hit:.0f}% 说对了（{avoid['total']} 条）")
+    body = "　".join(parts)
+    if buy_hit is not None and buy_hit >= 55:
+        st.success(f"扫描**准**：{body}。买对的比例明显高于瞎猜（50%），有正期望。")
+    elif buy_hit is not None and buy_hit < 45:
+        st.warning(f"扫描**不准**：{body}。买对的比例低于瞎猜，需收紧门槛或拉长确认。")
+    else:
+        st.info(f"扫描**一般**：{body}。接近瞎猜水平，参考价值有限。")
+
+    # ---- 3 个主桶指标卡（生产口径）+ 旧均值回归折叠 ----
+    card_sub = {
+        OPPORTUNITY_TREND_BUY: "买对了几次 / 说了几次买",
+        OPPORTUNITY_TREND_WATCH: "等对了几次 / 说了几次等",
+        OPPORTUNITY_AVOID: "躲对了几次 / 说了几次躲",
+    }
+    cols = st.columns(3)
     for col, opp_type in zip(cols, [
-        OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
-        OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID
+        OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID
     ]):
         cfg = OPP_CONFIG[opp_type]
         data = by_opp.get(opp_type)
@@ -677,7 +837,8 @@ def render_opportunity_review(results: List[Dict]):
                     f'border-radius:0.5rem;border-bottom:3px solid {cfg["border"]};">'
                     f'<div style="font-size:0.85rem;color:{cfg["color"]};">{cfg["icon"]} {cfg["label"]}</div>'
                     f'<div style="font-size:2rem;font-weight:bold;color:{hit_color};">{hit:.0f}%</div>'
-                    f'<div style="font-size:0.8rem;color:#666;">{data["total"]}条 · 均{ret_text}</div>'
+                    f'<div style="font-size:0.82rem;color:#444;">说对 {data["correct"]}/{data["total"]} 条</div>'
+                    f'<div style="font-size:0.78rem;color:#666;">{card_sub[opp_type]} · 后来均{ret_text}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -701,7 +862,7 @@ def render_opportunity_review(results: List[Dict]):
         st.markdown("**按机会类型统计**")
         rows = []
         for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
-                         OPPORTUNITY_MEAN_REVERSION, OPPORTUNITY_AVOID]:
+                         OPPORTUNITY_AVOID, OPPORTUNITY_MEAN_REVERSION]:
             data = by_opp.get(opp_type)
             if not data or data["total"] == 0:
                 continue
@@ -733,8 +894,8 @@ def render_opportunity_review(results: List[Dict]):
     with col_chart:
         st.markdown("**命中率对比**")
         chart_rows = []
-        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
-                         OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID]:
+        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
+                         OPPORTUNITY_AVOID, OPPORTUNITY_MEAN_REVERSION]:
             data = by_opp.get(opp_type)
             if data and data["total"] > 0:
                 cfg = OPP_CONFIG[opp_type]
@@ -797,8 +958,8 @@ def render_opportunity_review(results: List[Dict]):
 
     with regime_chart:
         fig = go.Figure()
-        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
-                         OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID]:
+        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
+                         OPPORTUNITY_AVOID, OPPORTUNITY_MEAN_REVERSION]:
             cfg = OPP_CONFIG[opp_type]
             hit_rates = []
             for reg in regime_order:
@@ -823,8 +984,8 @@ def render_opportunity_review(results: List[Dict]):
     with regime_table:
         st.markdown("**命中率明细**")
         table_rows = []
-        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_MEAN_REVERSION,
-                         OPPORTUNITY_TREND_WATCH, OPPORTUNITY_AVOID]:
+        for opp_type in [OPPORTUNITY_TREND_BUY, OPPORTUNITY_TREND_WATCH,
+                         OPPORTUNITY_AVOID, OPPORTUNITY_MEAN_REVERSION]:
             cfg = OPP_CONFIG[opp_type]
             row = {"类型": cfg["label"]}
             for reg in regime_order:
@@ -866,10 +1027,11 @@ def render_opportunity_review(results: List[Dict]):
     st.caption("不同评分区间的信号质量差异，用于判断阈值是否需要调整")
 
     def bucket(score, bins=(30, 50, 70, 90)):
+        labels = ["<30", "30-50", "50-70", "70-90", ">=90"]
         for i, b in enumerate(bins):
             if score < b:
-                return f"<{b}"
-        return f">={bins[-1]}"
+                return labels[i]
+        return labels[-1]
 
     bucket_order = ["<30", "30-50", "50-70", "70-90", ">=90"]
     dim_config = [
@@ -1010,22 +1172,22 @@ def render_opportunity_review(results: List[Dict]):
             st.plotly_chart(fig, use_container_width=True)
 
     # ---- 指标说明 ----
-    with st.expander("  指标含义", expanded=False):
+    with st.expander("  指标含义（补充）", expanded=False):
         st.markdown(f"""
-**命中率** — {HIT_RATE}
+**命中率（说对率）** — 说对条数 ÷ 总条数。随机瞎猜约 50%。
 
-| 机会类型 | 正确判定 | 含义 |
-|---------|---------|------|
-| 趋势买入 | 前向收益 > 0 | 说"买"，后来真的涨了 |
-| 趋势关注 | 前向收益 > -5% | 说"关注"，后来没有暴跌 |
-| 均值回归 | 前向收益 > 0 | 说"超卖会反弹"，后来真的弹了 |
-| 建议规避 | 前向收益 < 基准 | 说"别碰"，后来跑输了大盘 |
+| 机会类型 | 说什么 | 什么算说对 | 通俗理解 |
+|---------|--------|-----------|---------|
+| 过门槛 | 买 | 前向收益 > 0 | 买对了 |
+| 门槛附近 | 等 | 前向收益 > −5% | 等对了（没踩大坑） |
+| 不碰 | 躲 | 前向收益 < SPY | 躲对了（跑输大盘） |
+| 旧·均值回归 | （已退役） | 前向收益 > 0 | 历史口径，不在生产机会轴 |
 
-**后悔率** — {REGRET_RATE}
+**后悔率** — 说过门槛/等，但后来亏超 5% 的比例（说买却踩坑）。越低越好。
 
-**盈亏比** — {PROFIT_LOSS_RATIO}
+**盈亏比** — 平均盈利 ÷ 平均亏损绝对值。>1 盈大于亏。
 
-**前向收益** — {FORWARD_RETURN}
+**前向收益** — 信号日之后的实际涨幅，窗口 = 左侧选定的评估周期。
         """)
 
 
@@ -1036,19 +1198,75 @@ def render_opportunity_review(results: List[Dict]):
 def render_strategy_review(data: Dict, horizon_days: int = 30):
     """渲染策略回测复盘结果"""
     st.subheader("  策略回测复盘")
-    st.caption("P3 推荐的策略，后来跑赢 SPY 了吗？")
+    st.caption("P3 推荐的策略，后来跑赢 SPY（标普500 买入持有）了吗？")
 
     full_results = data.get("full_results", [])
     sample_results = data.get("sample_results", [])
+    data_error = data.get("data_error")
 
+    if data_error == "no_spy":
+        st.warning("缺少 SPY 历史价格，无法做跑赢对比。请先 `python scripts/daily_sync.py`。")
+        return
+    if data_error == "no_data":
+        st.warning("策略宇宙行情未入库。请先 `python scripts/daily_sync.py`。")
+        return
     if not full_results:
         st.warning("数据不足，无法进行策略回测复盘")
         return
+
+    # ---- 一句话结论（生产策略 vs SPY）----
+    spy_row = next((r for r in full_results if "SPY" in r.strategy_name), None)
+    live = [r for r in full_results if "SPY" not in r.strategy_name]
+    live_by_ret = sorted(live, key=lambda r: r.total_return, reverse=True)
+    prod = next((r for r in live if r.strategy_name == PRODUCTION_STRATEGY_NAME), None)
+
+    if prod is not None and spy_row is not None:
+        excess = prod.total_return - spy_row.total_return
+        if excess > 0:
+            beat = (
+                f"生产策略 **{prod.strategy_name}** 近 1 年 **{prod.total_return:+.1f}%**"
+                f"（最大回撤 {prod.max_drawdown:.1f}%），"
+                f"比 **SPY（标普500 买入持有，{spy_row.total_return:+.1f}%）**"
+                f"**多赚 {excess:.1f} 个百分点**。"
+            )
+        elif excess < 0:
+            beat = (
+                f"生产策略 **{prod.strategy_name}** 近 1 年 **{prod.total_return:+.1f}%**"
+                f"（最大回撤 {prod.max_drawdown:.1f}%），"
+                f"比 **SPY（{spy_row.total_return:+.1f}%）**"
+                f"**少赚 {abs(excess):.1f} 个百分点**。"
+            )
+        else:
+            beat = (
+                f"生产策略 **{prod.strategy_name}** 近 1 年 **{prod.total_return:+.1f}%**，"
+                f"与 **SPY（{spy_row.total_return:+.1f}%）打平**。"
+            )
+        # 附注：若收益榜首不是生产策略，说明角色差异，别误读成「该换策略」
+        if live_by_ret and live_by_ret[0].strategy_name != PRODUCTION_STRATEGY_NAME:
+            top_ret = live_by_ret[0]
+            role = _strategy_role(top_ret.strategy_name)
+            beat += (
+                f" 全场收益最高是「{top_ret.strategy_name}」"
+                f"（{top_ret.total_return:+.1f}% / 回撤 {top_ret.max_drawdown:.1f}%，角色：{role}）"
+                f"——角色不同，不直接替代生产策略。"
+            )
+        st.success(beat)
+    elif prod is not None:
+        st.success(
+            f"生产策略 **{prod.strategy_name}** 近 1 年 **{prod.total_return:+.1f}%**"
+            f"（最大回撤 {prod.max_drawdown:.1f}%）。SPY 基准缺失，无法比较超额。"
+        )
+    else:
+        st.info("未找到生产策略回测结果，暂无跑赢结论。")
 
     # ============================================================
     # 全策略 1 年表现总览
     # ============================================================
     st.markdown("**  全策略近 1 年表现总览**")
+    st.caption(
+        "默认按总收益排序。**风险平价/低相关是底仓工具**（回撤小、收益弹性小），"
+        "夏普容易排前面，但不能替代生产策略「成长动量·个股」。"
+    )
 
     # SPY 基准
     spy_total = None
@@ -1065,6 +1283,7 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
     for r in full_results:
         perf_rows.append({
             "策略": r.strategy_name,
+            "角色": _strategy_role(r.strategy_name),
             "总收益%": r.total_return,
             "年化%": r.annualized_return,
             "最大回撤%": r.max_drawdown,
@@ -1075,7 +1294,8 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
         })
 
     perf_df = pd.DataFrame(perf_rows)
-    perf_df = perf_df.sort_values("Sharpe", ascending=False).reset_index(drop=True)
+    # 按总收益排：夏普偏爱低波底仓，不适合当「谁更好」的主排序
+    perf_df = perf_df.sort_values("总收益%", ascending=False).reset_index(drop=True)
 
     # 格式化显示
     display_df = perf_df.copy()
@@ -1146,25 +1366,24 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
         st.info("采样点不足，无法评估推荐策略")
         return
 
-    st.markdown("**  推荐策略跑赢率评估**")
+    st.markdown("**  生产策略跑赢率评估**")
+    st.caption(
+        f"「推荐」= 生产策略「{PRODUCTION_STRATEGY_NAME}」，不是夏普榜第一。"
+        "夏普 = 收益/波动，低波底仓（风险平价）会系统性霸榜，不代表该当主策略。"
+        "每个采样时点看生产策略往后一个评估周期有没有跑赢 SPY。"
+    )
 
-    # 汇总统计
+    # 汇总统计（评估对象固定为生产策略）
     total_evaluated = 0
     total_beat = 0
     all_excess = []
-    strategy_recommended_count = {}
-    strategy_beat_count = {}
 
     for r in sample_results:
-        rec = r["recommended"]
-        strategy_recommended_count[rec] = strategy_recommended_count.get(rec, 0) + 1
-
-        top = r["rankings"][0] if r["rankings"] else None
+        top = r.get("recommended_entry") or (r["rankings"][0] if r["rankings"] else None)
         if top and top["beat_spy"] is not None:
             total_evaluated += 1
             if top["beat_spy"]:
                 total_beat += 1
-                strategy_beat_count[rec] = strategy_beat_count.get(rec, 0) + 1
             if top["forward_return"] is not None and top["spy_forward_return"] is not None:
                 all_excess.append(top["forward_return"] - top["spy_forward_return"])
 
@@ -1178,9 +1397,9 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
         st.markdown(
             f'<div style="text-align:center;padding:0.8rem;background:#e3f2fd;'
             f'border-radius:0.5rem;border-bottom:3px solid #42a5f5;" title="{STRATEGY_HIT_RATE}">'
-            f'<div style="font-size:0.85rem;color:#1565c0;">推荐策略跑赢率 ⓘ</div>'
+            f'<div style="font-size:0.85rem;color:#1565c0;">跑赢 SPY 的比例 ⓘ</div>'
             f'<div style="font-size:2rem;font-weight:bold;color:{hit_color};">{hit_rate:.0f}%</div>'
-            f'<div style="font-size:0.8rem;color:#666;">{total_beat}/{total_evaluated}</div>'
+            f'<div style="font-size:0.8rem;color:#666;">{total_beat}/{total_evaluated} 个推荐时点跑赢</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1196,13 +1415,12 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
             unsafe_allow_html=True,
         )
     with c3:
-        best_strategy = max(strategy_recommended_count.items(), key=lambda x: x[1])[0] if strategy_recommended_count else "N/A"
         st.markdown(
             f'<div style="text-align:center;padding:0.8rem;background:#f3e5f5;'
             f'border-radius:0.5rem;border-bottom:3px solid #ab47bc;">'
-            f'<div style="font-size:0.85rem;color:#6a1b9a;">最常被推荐</div>'
-            f'<div style="font-size:1.1rem;font-weight:bold;color:#6a1b9a;">{best_strategy}</div>'
-            f'<div style="font-size:0.8rem;color:#666;">{strategy_recommended_count.get(best_strategy, 0)}次</div>'
+            f'<div style="font-size:0.85rem;color:#6a1b9a;">评估对象（固定）</div>'
+            f'<div style="font-size:1.05rem;font-weight:bold;color:#6a1b9a;">{PRODUCTION_STRATEGY_NAME}</div>'
+            f'<div style="font-size:0.8rem;color:#666;">生产策略，非夏普轮换</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1211,8 +1429,14 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
 
     # 推荐策略 vs SPY
     dates = [r["date"] for r in sample_results]
-    rec_returns = [r["rankings"][0]["forward_return"] if r["rankings"] else None for r in sample_results]
-    spy_returns = [r["rankings"][0]["spy_forward_return"] if r["rankings"] else None for r in sample_results]
+    rec_returns = [
+        (r.get("recommended_entry") or (r["rankings"][0] if r["rankings"] else {})).get("forward_return")
+        for r in sample_results
+    ]
+    spy_returns = [
+        (r.get("recommended_entry") or (r["rankings"][0] if r["rankings"] else {})).get("spy_forward_return")
+        for r in sample_results
+    ]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=dates, y=rec_returns, name="推荐策略", marker_color="#2196f3", opacity=0.7))
@@ -1228,7 +1452,7 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
     with st.expander("  详细记录", expanded=False):
         rows = []
         for r in sample_results:
-            top = r["rankings"][0] if r["rankings"] else None
+            top = r.get("recommended_entry") or (r["rankings"][0] if r["rankings"] else None)
             if not top:
                 continue
             fwd = top["forward_return"]
@@ -1264,7 +1488,7 @@ def render_strategy_review(data: Dict, horizon_days: int = 30):
         rec = r["recommended"]
         by_regime[regime]["recommended_counts"][rec] = by_regime[regime]["recommended_counts"].get(rec, 0) + 1
 
-        top = r["rankings"][0] if r["rankings"] else None
+        top = r.get("recommended_entry") or (r["rankings"][0] if r["rankings"] else None)
         if top and top["beat_spy"] is not None:
             by_regime[regime]["total"] += 1
             if top["beat_spy"]:
@@ -1382,30 +1606,30 @@ def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[Bac
                     "reason": "单一 12 月动量在市场转折时滞后，双时间框架可提前预警",
                 })
 
-        # ---- 动量+波动率过滤 ----
-        if "动量+波动率" in name:
-            if vol > 20:
+        # ---- 成长动量·个股（生产）----
+        if "成长动量" in name:
+            if max_dd < -35:
                 suggestions.append({
                     "strategy": name,
                     "priority": "中",
-                    "summary": "组合波动率偏高，目标波动率可能设置过高",
-                    "problem": f"波动率 {vol:.1f}%，target_vol=12% 可能未生效",
-                    "current": "target_vol=12.0%, min_momentum=50",
-                    "suggestion": "降低 target_vol 到 10%，或提高 min_momentum 到 60",
-                    "reason": "高波动环境下仓位缩放不足，需要更严格的入场条件",
+                    "summary": "生产策略回撤接近 −40% 预算，关注是否需要人工干预",
+                    "problem": f"最大回撤 {max_dd:.1f}%，接近组合 −40% 回撤预算",
+                    "current": "3M 动量 top12 满仓等权，单票 20%，无自动刹车",
+                    "suggestion": "回撤贴近 −40% 时人工评估是否降仓；不要加自动 A2（会死锁空仓）",
+                    "reason": "个股动量天然 −30%+ 回撤，自动刹车已证伪；−40% 是人工红线",
                 })
 
-        # ---- 回撤控制策略 ----
-        if "回撤控制" in name:
+        # ---- 凯利袖珍组合 ----
+        if "70/30" in name:
             if max_dd < -12:
                 suggestions.append({
                     "strategy": name,
-                    "priority": "高",
-                    "summary": "回撤阈值过于宽松，减仓不够及时",
-                    "problem": f"最大回撤 {max_dd:.1f}%，但阈值在 -5% 才开始减仓",
-                    "current": "DD<-5%: 满仓, <-8%: 半仓, <-10%: 20%, >-10%: 清仓",
-                    "suggestion": "提前减仓：DD<-3%: 80%, <-5%: 50%, <-8%: 20%, >-10%: 清仓",
-                    "reason": "用户保本优先，应在回撤初期就开始降仓",
+                    "priority": "中",
+                    "summary": "对冲/CTA 袖珍未压住回撤",
+                    "problem": f"最大回撤 {max_dd:.1f}%，袖珍配比可能不够",
+                    "current": "70% 主仓 + 30% CTA/反脆弱袖珍",
+                    "suggestion": "提高袖珍到 35%，或袖珍内加吊灯止损",
+                    "reason": "袖珍的作用是压回撤，压不住就要加码",
                 })
 
         # ---- 反脆弱策略 ----
@@ -1457,118 +1681,188 @@ def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[Bac
 # 主函数
 # ============================================================
 
-def render_market_recommendation(dm: DataManager):
-    """基于当前市场体制推荐最适合的策略"""
+def _preflight_data(dm: DataManager) -> bool:
+    """开跑前检查 SPY/核心数据是否入库，缺了直接给修复命令。"""
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    spy = dm.load("SPY", start, end)
+    if spy.empty:
+        st.error(
+            "**本地数据库没有 SPY 近期价格**，P4 无法评估「跑赢 SPY 了吗」。\n\n"
+            "修复：\n"
+            "1. 终端执行 `python scripts/daily_sync.py`（拉全量行情+宏观）\n"
+            "2. 或打开 **P3 策略回测** → 侧边栏「预取回测数据」\n"
+            "3. 回到本页刷新"
+        )
+        return False
 
-    st.subheader("  当前市场策略推荐")
-    st.caption("基于市场体制和近 1 年回测数据，推荐当前最适合的策略组合")
+    universe = STRATEGY_UNIVERSE
+    loaded = 0
+    for sym in universe:
+        if not dm.load(sym, start, end).empty:
+            loaded += 1
+    if loaded < max(3, len(universe) // 4):
+        st.error(
+            f"**行情覆盖不足**：策略宇宙 {len(universe)} 个标的里近 30 天只有 {loaded} 个有数据。\n\n"
+            "修复：执行 `python scripts/daily_sync.py` 后刷新本页。"
+        )
+        return False
+    return True
 
-    # 加载数据
-    end_date = datetime.now()
-    data_start = (end_date - timedelta(days=400)).strftime("%Y-%m-%d")
-    data_end = end_date.strftime("%Y-%m-%d")
-    all_symbols = STRATEGY_UNIVERSE
-    data = {}
-    for symbol in all_symbols:
-        df = dm.load(symbol, data_start, data_end)
-        if not df.empty:
-            data[symbol] = df
 
-    spy_close = data.get("SPY", pd.DataFrame()).get("close", pd.Series())
-    tlt_close = data.get("TLT", pd.DataFrame()).get("close", pd.Series())
-    cl_close = data.get("CL", pd.DataFrame()).get("close", pd.Series())
-
-    if spy_close.empty:
-        st.warning("数据不足，无法检测市场体制")
-        return
-
-    # 检测市场体制
-    regime = {"regime": "中性", "description": "数据不足"}
-    if not tlt_close.empty and not cl_close.empty:
-        regime = detect_market_regime(spy_close, tlt_close, cl_close)
-
-    rs = calc_regime_score(spy_close)
-    composite = rs.get("composite", 50)
-    vol_regime = rs.get("vol_regime", "正常")
-
-    rec = REGIME_RECOMMENDATIONS.get(regime["regime"], REGIME_RECOMMENDATIONS["中性"])
-
-    # 渲染体制卡片
-    st.markdown(
-        f'<div style="padding:1rem 1.2rem;background:{rec["bg"]};border-left:5px solid {rec["color"]};'
-        f'border-radius:0 0.5rem 0.5rem 0;margin-bottom:1rem;">'
-        f'<div style="font-size:1.5rem;font-weight:bold;color:{rec["color"]};">{rec["label"]}{tip_icon(MARKET_REGIME)}</div>'
-        f'<div style="color:#555;margin-top:0.3rem;">{regime["description"]}</div>'
-        f'<div style="color:#333;margin-top:0.5rem;font-weight:500;">  {rec["advice"]}</div>'
-        f'<div style="color:#888;margin-top:0.3rem;font-size:0.85rem;">'
-        f'综合评分 {composite:.0f}{tip_icon(COMPOSITE_SCORE)} · '
-        f'波动率 {vol_regime}{tip_icon(VOL_REGIME)}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
+def _render_review_headline(opp_results: List[Dict], strat_results: Dict,
+                            horizon_days: int = 30):
+    """复盘总结论 — 直接回答两个问题，让没接触过的人一眼看懂。"""
+    horizon_label = next(
+        (k for k, v in HORIZON_OPTIONS.items() if v == horizon_days),
+        f"{horizon_days} 日",
     )
 
-    # 渲染推荐策略卡片
-    cols = st.columns(3)
-    for col, s in zip(cols, rec["strategies"]):
-        with col:
-            # 查找策略在回测中的 Sharpe
-            sharpe_text = ""
-            # 从 strategies.py 获取策略描述
-            strategy_cls = None
-            for cls in [TrendFollowingStrategy, RiskParityStrategy,
-                        MinCorrelationStrategy, DualMomentumStrategy, MomentumVolFilterStrategy,
-                        DrawdownControlStrategy, AntifragileStrategy, TailRiskParityStrategy,
-                        DrawdownConstraintStrategy]:
-                if cls.name == s["name"]:
-                    strategy_cls = cls
-                    break
+    # ---- Q1: 扫描准不准？ ----
+    by_opp = {}
+    for r in opp_results or []:
+        for s in r.get("scores", []):
+            opp = s.get("opportunity")
+            if opp == OPPORTUNITY_NEUTRAL:
+                continue
+            by_opp.setdefault(opp, {"correct": 0, "total": 0})
+            by_opp[opp]["total"] += 1
+            if s.get("forward_return") is not None and s.get("correct"):
+                by_opp[opp]["correct"] += 1
 
-            desc = strategy_cls.description if strategy_cls else ""
-            cat_label = ""
-            if strategy_cls and strategy_cls.category in STRATEGY_CATEGORIES:
-                cat_label = STRATEGY_CATEGORIES[strategy_cls.category]["label"]
+    buy = by_opp.get(OPPORTUNITY_TREND_BUY)
+    avoid = by_opp.get(OPPORTUNITY_AVOID)
+    if buy and buy["total"]:
+        buy_hit = buy["correct"] / buy["total"] * 100
+        scan_verdict = "准" if buy_hit >= 55 else ("不准" if buy_hit < 45 else "一般")
+        scan_color = "#2e7d32" if buy_hit >= 55 else ("#c62828" if buy_hit < 45 else "#e65100")
+        scan_bg = "#e8f5e9" if buy_hit >= 55 else ("#ffebee" if buy_hit < 45 else "#fff3e0")
+        scan_border = "#4caf50" if buy_hit >= 55 else ("#ef5350" if buy_hit < 45 else "#ff9800")
+        scan_detail = (
+            f'说「买」的后来 {buy_hit:.0f}% 真涨了'
+            f'（{buy["total"]} 条信号，{horizon_label}窗口）'
+        )
+        if avoid and avoid["total"]:
+            avoid_hit = avoid["correct"] / avoid["total"] * 100
+            scan_detail += f'；说「别碰」的 {avoid_hit:.0f}% 真跑输了大盘'
+    else:
+        scan_verdict, scan_color, scan_bg, scan_border = "样本不足", "#666", "#f5f5f5", "#bbb"
+        scan_detail = "历史信号太少，暂无法判断扫描准不准"
 
-            st.markdown(
-                f'<div style="padding:0.8rem;background:#fff;border:1px solid #e0e0e0;border-radius:0.5rem;'
-                f'border-top:3px solid {rec["color"]};height:160px;">'
-                f'<div style="font-size:1rem;font-weight:600;">{s["name"]}</div>'
-                f'<div style="font-size:0.75rem;color:#888;margin:0.2rem 0;">{cat_label}</div>'
-                f'<div style="font-size:0.85rem;color:#555;margin-top:0.4rem;">{s["reason"]}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+    # ---- Q2: 推荐跑赢了吗？和谁比、赢多少 ----
+    data_error = (strat_results or {}).get("data_error")
+    full = (strat_results or {}).get("full_results") or []
+    live = [r for r in full if "SPY" not in r.strategy_name]
+    spy_row = next((r for r in full if "SPY" in r.strategy_name), None)
+    if data_error == "no_spy":
+        strat_verdict, strat_color, strat_bg, strat_border = "缺 SPY 数据", "#c62828", "#ffebee", "#ef5350"
+        strat_detail = (
+            "本地库里没有 SPY 历史价格，无法比较。"
+            "请先执行 <b>python scripts/daily_sync.py</b>，"
+            "或在 P3 侧边栏点「预取回测数据」。"
+        )
+    elif data_error == "no_data":
+        strat_verdict, strat_color, strat_bg, strat_border = "缺行情数据", "#c62828", "#ffebee", "#ef5350"
+        strat_detail = (
+            "策略宇宙的行情还没入库。"
+            "请先执行 <b>python scripts/daily_sync.py</b>。"
+        )
+    elif live and spy_row is not None:
+        prod = next((r for r in live if r.strategy_name == PRODUCTION_STRATEGY_NAME), None)
+        focus = prod or max(live, key=lambda r: r.sharpe_ratio)
+        label = "生产策略" if prod is not None else "收益最高策略"
+        excess = focus.total_return - spy_row.total_return
+        if excess > 0:
+            strat_verdict = "跑赢了"
+            strat_color, strat_bg, strat_border = "#2e7d32", "#e8f5e9", "#4caf50"
+            win_word = "多赚"
+        elif excess < 0:
+            strat_verdict = "没跑赢"
+            strat_color, strat_bg, strat_border = "#c62828", "#ffebee", "#ef5350"
+            win_word = "少赚"
+        else:
+            strat_verdict = "打平"
+            strat_color, strat_bg, strat_border = "#e65100", "#fff3e0", "#ff9800"
+            win_word = "持平"
+        strat_detail = (
+            f'和 <b>SPY（标普500 买入持有）</b>比：'
+            f'{label}「{focus.strategy_name}」近 1 年 '
+            f'<b>{focus.total_return:+.1f}%</b> vs SPY {spy_row.total_return:+.1f}%，'
+            f'<b>{win_word} {excess:+.1f} 个百分点</b>'
+        )
+    else:
+        strat_verdict, strat_color, strat_bg, strat_border = "样本不足", "#666", "#f5f5f5", "#bbb"
+        strat_detail = (
+            "策略回测结果为空，或 SPY 基准行缺失，无法比较。"
+            "先跑 daily_sync 补数据；若数据齐全仍看到本条，是代码问题。"
+        )
 
-    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            f'<div style="padding:0.75rem 1rem;background:{scan_bg};border-left:4px solid {scan_border};'
+            f'border-radius:0 0.4rem 0.4rem 0;">'
+            f'<div style="font-size:0.8rem;color:#666;">P2 扫描准不准</div>'
+            f'<div style="font-size:1.25rem;font-weight:700;color:{scan_color};margin-top:0.15rem;">'
+            f'{scan_verdict}</div>'
+            f'<div style="font-size:0.92rem;color:#333;margin-top:0.35rem;line-height:1.45;">{scan_detail}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div style="padding:0.75rem 1rem;background:{strat_bg};border-left:4px solid {strat_border};'
+            f'border-radius:0 0.4rem 0.4rem 0;">'
+            f'<div style="font-size:0.8rem;color:#666;">P3 推荐跑赢了吗（vs SPY）</div>'
+            f'<div style="font-size:1.25rem;font-weight:700;color:{strat_color};margin-top:0.15rem;">'
+            f'{strat_verdict}</div>'
+            f'<div style="font-size:0.92rem;color:#333;margin-top:0.35rem;line-height:1.45;">{strat_detail}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    st.caption(
+        "结论在前，明细在后。扫描：过门槛 = 12M>8%（门槛8% 口径），"
+        f"「说对」= {horizon_label}内涨/没跌超5%/跑输大盘。"
+        "策略：比较基准固定为 SPY 标普500 买入持有。"
+    )
 
 
 def main():
     st.title("  复盘回顾")
-    st.caption("双轨复盘：机会扫描分类准确性 + 策略推荐跑赢率")
+    st.caption("双轨复盘：机会扫描分类准确性 + 策略推荐跑赢率 · 结论先行")
 
     dm = get_data_manager()
     horizon_days = render_sidebar()
 
-    # ============================================================
-    # 区块 0: 市场策略推荐
-    # ============================================================
-    render_market_recommendation(dm)
+    # 数据预检：缺 SPY/行情时先拦住，给修复命令，不空跑
+    if not _preflight_data(dm):
+        st.stop()
 
-    # ============================================================
-    # 区块 A: 机会扫描复盘
-    # ============================================================
+    # 先算两轨结果，才能给出总结论
     with st.spinner("运行机会扫描回测..."):
         opp_results = backtest_opportunities(dm, horizon_days=horizon_days)
+    with st.spinner("运行策略回测复盘..."):
+        strat_results = backtest_strategy_rankings(dm, horizon_days=horizon_days)
 
-    render_opportunity_review(opp_results)
+    # ============================================================
+    # 区块 0: 复盘总结论
+    # ============================================================
+    _render_review_headline(opp_results, strat_results, horizon_days)
+
+    st.divider()
+
+    # 当前市场体制与策略推荐在 P2 顶部 / 主页，P4 只做历史复盘，不重复展示
+
+    # ============================================================
+    # 区块 1: 机会扫描复盘
+    # ============================================================
+    render_opportunity_review(opp_results, horizon_days)
 
     st.divider()
 
     # ============================================================
-    # 区块 B: 策略回测复盘
+    # 区块 2: 策略回测复盘
     # ============================================================
-    with st.spinner("运行策略回测复盘..."):
-        strat_results = backtest_strategy_rankings(dm, horizon_days=horizon_days)
-
     render_strategy_review(strat_results, horizon_days)
 
 

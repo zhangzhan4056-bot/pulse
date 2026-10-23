@@ -9,7 +9,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS
+from .config import ASSETS, US_SYMBOLS, CN_SYMBOLS, GLOBAL_SYMBOLS, US_SECTORS_SYMBOLS, US_STOCK_UNIVERSE
 from .storage import DataStorage, DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,81 @@ class DataManager:
                 results[symbol] = 0
         return results
 
-    def fetch_cn_assets(self) -> Dict[str, int]:
+    def us_stocks_need_refresh(
+        self,
+        required_start: str,
+        required_end: str,
+        tail_lag_days: int = 7,
+    ) -> list:
+        """返回需要 API 补数的美股个股（缺数 / 尾部过旧 / 头部可再延）。
+
+        Args:
+            required_start: 调用方真正需要的最早日期（预热请由调用方先扣好）
+            required_end: 需要覆盖的最后日期
+
+        已有足够覆盖时返回空列表。免费计划 outputsize 有限，
+        已有约 8 年历史时头部再拉也延不了，不再重复请求。
+        """
+        symbols = list(US_STOCK_UNIVERSE.keys())
+        earliest = self.storage.get_earliest_dates(symbols)
+        today = datetime.now().strftime("%Y-%m-%d")
+        end_dt = datetime.strptime(min(required_end, today), "%Y-%m-%d")
+        start_dt = datetime.strptime(required_start, "%Y-%m-%d")
+
+        need = []
+        for sym in symbols:
+            first = earliest.get(sym)
+            last = self.storage.get_last_date(sym)
+            if first is None or last is None:
+                need.append(sym)
+                continue
+            last_dt = datetime.strptime(last, "%Y-%m-%d")
+            first_dt = datetime.strptime(first, "%Y-%m-%d")
+            # 尾部过旧（周末/假日/未开盘允许滞后）
+            if (end_dt - last_dt).days > tail_lag_days:
+                need.append(sym)
+                continue
+            # 头部不足：仅当已有跨度明显短于需求才补
+            #（~2000 个交易日 ≈ 8 年日历天，免费计划单次窗口上限附近）
+            if first_dt > start_dt and (last_dt - first_dt).days < 2000:
+                need.append(sym)
+        return need
+
+    def fetch_us_stocks(
+        self,
+        outputsize: int = 250,
+        sleep_sec: float = 8.0,
+        symbols: Optional[list] = None,
+    ) -> Dict[str, int]:
+        """获取美股个股数据（成长动量策略专用，免费计划 8 次/分钟）
+
+        Args:
+            outputsize: 获取最近 N 根 K 线
+            sleep_sec: 请求间隔，默认 8 秒（贴合 8 次/分钟）
+            symbols: 只拉指定 symbol；默认全部 US_STOCK_UNIVERSE
+        """
+        import time
+        results = {}
+        if symbols is None:
+            symbols = list(US_STOCK_UNIVERSE.keys())
+        for i, symbol in enumerate(symbols):
+            if i > 0 and sleep_sec > 0:
+                time.sleep(sleep_sec)
+            try:
+                df = self.twelvedata.get_time_series(symbol, outputsize=outputsize)
+                count = self.storage.save(df, symbol, "twelvedata")
+                results[symbol] = count
+                logger.info(f"获取个股 {symbol} 成功，写入 {count} 条")
+            except Exception as e:
+                logger.error(f"获取个股 {symbol} 失败: {e}")
+                results[symbol] = 0
+        return results
+
+    def fetch_cn_assets(self, symbols: Optional[list] = None) -> Dict[str, int]:
         """获取 A 股指数数据
+
+        Args:
+            symbols: 只拉指定 symbol；默认全部 CN_SYMBOLS
 
         Returns:
             dict: {symbol: 写入行数}
@@ -79,7 +152,7 @@ class DataManager:
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
         end_date = datetime.now().strftime("%Y%m%d")
 
-        for symbol in CN_SYMBOLS:
+        for symbol in (symbols if symbols is not None else list(CN_SYMBOLS.keys())):
             try:
                 df = self.akshare.get_index_hist(symbol, start_date, end_date)
                 count = self.storage.save(df, symbol, "akshare")
@@ -90,14 +163,17 @@ class DataManager:
                 results[symbol] = 0
         return results
 
-    def fetch_global_assets(self) -> Dict[str, int]:
+    def fetch_global_assets(self, symbols: Optional[list] = None) -> Dict[str, int]:
         """获取全球指数数据（日韩等）
+
+        Args:
+            symbols: 只拉指定 symbol；默认全部 GLOBAL_SYMBOLS
 
         Returns:
             dict: {symbol: 写入行数}
         """
         results = {}
-        for symbol in GLOBAL_SYMBOLS:
+        for symbol in (symbols if symbols is not None else list(GLOBAL_SYMBOLS.keys())):
             try:
                 df = self.akshare.get_global_index_hist(symbol)
                 count = self.storage.save(df, symbol, "akshare_global")
@@ -221,46 +297,44 @@ class DataManager:
         all_symbols = us_symbols + cn_symbols + global_symbols
         earliest = self.storage.get_earliest_dates(all_symbols)
 
-        # 找出缺失或不足的 symbol（按数据源分组）
-        missing_us = []
-        missing_cn = []
-        missing_global = []
+        # 只补「真正缺数」的 symbol：起点晚但已有 ≥1 年（上市晚/源数据起点晚）不再追
+        def _need_history(symbol: str, first: Optional[str]) -> bool:
+            if first is None:
+                return True
+            if first <= cutoff:
+                return False
+            last = self.storage.get_last_date(symbol)
+            if last is None:
+                return True
+            span_days = (
+                datetime.strptime(last, "%Y-%m-%d") - datetime.strptime(first, "%Y-%m-%d")
+            ).days
+            return span_days < 365
 
-        for symbol in us_symbols:
-            first = earliest.get(symbol)
-            if first is None or first > cutoff:
-                missing_us.append(symbol)
-
-        for symbol in cn_symbols:
-            first = earliest.get(symbol)
-            if first is None or first > cutoff:
-                missing_cn.append(symbol)
-
-        for symbol in global_symbols:
-            first = earliest.get(symbol)
-            if first is None or first > cutoff:
-                missing_global.append(symbol)
+        missing_us = [s for s in us_symbols if _need_history(s, earliest.get(s))]
+        missing_cn = [s for s in cn_symbols if _need_history(s, earliest.get(s))]
+        missing_global = [s for s in global_symbols if _need_history(s, earliest.get(s))]
 
         if not missing_us and not missing_cn and not missing_global:
             logger.info("数据已满足回测要求，无需预取")
             return
 
-        # 1. 预取 A 股指数（AkShare，返回全部历史，无限速）
+        # 1. 预取 A 股指数（只拉缺的）
         if missing_cn:
-            logger.info(f"需预取 {len(missing_cn)} 个 A 股 symbol")
+            logger.info(f"需预取 {len(missing_cn)} 个 A 股 symbol: {missing_cn}")
             try:
-                cn_results = self.fetch_cn_assets()
+                cn_results = self.fetch_cn_assets(symbols=missing_cn)
                 for sym, count in cn_results.items():
                     if isinstance(count, int) and count > 0:
                         logger.info(f"预取 A 股 {sym} 完成，写入 {count} 条")
             except Exception as e:
                 logger.error(f"预取 A 股失败: {e}")
 
-        # 2. 预取全球指数（AkShare，返回全部历史，无限速）
+        # 2. 预取全球指数（只拉缺的）
         if missing_global:
-            logger.info(f"需预取 {len(missing_global)} 个全球 symbol")
+            logger.info(f"需预取 {len(missing_global)} 个全球 symbol: {missing_global}")
             try:
-                global_results = self.fetch_global_assets()
+                global_results = self.fetch_global_assets(symbols=missing_global)
                 for sym, count in global_results.items():
                     if isinstance(count, int) and count > 0:
                         logger.info(f"预取全球 {sym} 完成，写入 {count} 条")
@@ -277,7 +351,7 @@ class DataManager:
             for i, symbol in enumerate(missing_us):
                 if i > 0:
                     import time
-                    time.sleep(1)  # 遵守速率限制
+                    time.sleep(8)  # 免费计划 8 次/分钟
                 try:
                     df = self.twelvedata.get_time_series(
                         symbol, outputsize=trading_days_needed
