@@ -144,6 +144,34 @@ GROWTH_UNIVERSE = {
     "SHY": "1-3年短债 ETF",
 }
 
+# 大盘母池（流动性换血的候选宇宙；生产策略仍用 55 股静态池）
+# 2019 年已是大盘、持续上市的美股普通股；排除 2019 后 IPO / 外国 ADR
+US_LARGE_CAP_UNIVERSE = {
+    **US_STOCK_UNIVERSE,
+    # 科技
+    "ACN": "埃森哲", "NOW": "ServiceNow", "INTU": "直觉软件", "ADP": "安德普翰",
+    "CMCSA": "康卡斯特", "CHTR": "特许通讯", "BKNG": "Booking",
+    # 消费/医药
+    "AMGN": "安进", "GILD": "吉利德", "MDT": "美敦力", "ISRG": "直觉外科",
+    "SYK": "史赛克", "ABT": "雅培", "TMO": "赛默飞", "DHR": "丹纳赫",
+    "LOW": "劳氏", "TGT": "塔吉特", "CL": "高露洁", "MO": "奥驰亚",
+    # 金融/能源/工业
+    "BRK.B": "伯克希尔", "C": "花旗", "BLK": "贝莱德", "SCHW": "嘉信理财",
+    "SPGI": "标普全球", "MMC": "威达信", "CB": "丘博保险", "USB": "美国合众银行",
+    "PNC": "PNC金融", "AON": "怡安", "UPS": "联合包裹", "UNP": "联合太平洋",
+    "LMT": "洛克希德马丁", "MMM": "3M", "DE": "迪尔", "FDX": "联邦快递",
+    "GD": "通用动力", "ITW": "伊利诺伊工具", "RTX": "雷神技术", "LIN": "林德",
+    "NEE": "新纪元能源", "AMT": "美国电塔", "PLD": "安博", "SLB": "斯伦贝谢",
+    "PSX": "菲利普斯66", "GM": "通用汽车",
+}
+
+GROWTH_WIDE_UNIVERSE = {
+    **US_LARGE_CAP_UNIVERSE,
+    "SPY": "标普500 ETF",
+    "QQQ": "纳斯达克100 ETF",
+    "SHY": "1-3年短债 ETF",
+}
+
 # 策略可交易宇宙 = 大类 + 国际 + 板块（ETF 策略共用，不含个股）
 STRATEGY_UNIVERSE = {
     **US_SYMBOLS,

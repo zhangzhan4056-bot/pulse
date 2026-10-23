@@ -92,14 +92,13 @@ def load_all_assets(
     start_date: str,
     end_date: str,
     extra_symbols: Optional[List[str]] = None,
-    include_growth: bool = False,
+    growth_symbols: Optional[List[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """加载资产数据（默认 STRATEGY_UNIVERSE；个股宇宙仅在选中策略需要时加载）"""
-    from core.data.config import GROWTH_UNIVERSE
-
     all_symbols = dict(STRATEGY_UNIVERSE)
-    if include_growth:
-        all_symbols.update(GROWTH_UNIVERSE)
+    if growth_symbols:
+        for s in growth_symbols:
+            all_symbols.setdefault(s, s)
     if extra_symbols:
         for s in extra_symbols:
             all_symbols.setdefault(s, s)
@@ -111,6 +110,18 @@ def load_all_assets(
             data[symbol] = df
 
     return data
+
+
+def _growth_symbols_for(strategy_names: List[str]) -> List[str]:
+    """收集选中策略的个股池（含 SPY/QQQ/SHY 防御腿）。"""
+    needed = set()
+    for name in strategy_names:
+        cls = STRATEGY_REGISTRY.get(name)
+        su = getattr(cls, "stock_universe", None) if cls else None
+        if su:
+            needed.update(su.keys())
+            needed.update(getattr(cls, "full_universe", {}).keys())
+    return sorted(needed)
 
 
 def run_backtests(
@@ -133,18 +144,21 @@ def run_backtests(
     load_start = (start_dt - timedelta(days=warmup_calendar_days)).strftime("%Y-%m-%d")
     days_needed = (end_dt - start_dt).days + warmup_calendar_days + 30
     dm.prefetch_for_backtest(days_needed)
-    # 成长动量用到美股个股：只补缺数/过旧的标的，避免每次全量 55 连打 API
+    # 成长动量用到美股个股：只补缺数/过旧的标的，避免每次全量连打 API
     need_stocks = any(
         name.startswith("成长动量") for name in strategy_names
     )
+    stock_syms = _growth_symbols_for(strategy_names) if need_stocks else []
     if need_stocks:
         try:
-            stale = dm.us_stocks_need_refresh(load_start, end_date)
+            stale = dm.us_stocks_need_refresh(load_start, end_date, symbols=stock_syms)
             if stale:
                 import logging
                 logging.getLogger(__name__).info(
                     f"补拉 {len(stale)} 只个股（其余已有覆盖）: {stale[:8]}..."
                 )
+                est_min = max(1, len(stale) * 8 // 60)
+                st.info(f"首次需补拉 {len(stale)} 只个股，约 {est_min} 分钟…")
                 dm.fetch_us_stocks(
                     outputsize=max(250, int(days_needed * 252 / 365)),
                     symbols=stale,
@@ -158,7 +172,7 @@ def run_backtests(
         dm,
         start_date=load_start,
         end_date=end_date,
-        include_growth=need_stocks,
+        growth_symbols=stock_syms,
     )
 
     if not all_data:

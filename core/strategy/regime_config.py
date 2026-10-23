@@ -48,9 +48,9 @@ REGIME_RECOMMENDATIONS = {
         "bg": "#e8f5e9",
         "advice": "趋势向上 + 股强于债，成长动量吃主升浪",
         "strategies": [
-            {"name": "成长动量·个股", "reason": "3M 动量 top12 满仓，吃个股主升浪（生产主线）"},
+            {"name": "成长动量·个股", "reason": "3M 动量 top8 涨幅加权，吃个股主升浪（生产主线）"},
             {"name": "满仓QQQ长期持有", "reason": "不想选股就满仓 QQQ，跟住成长股 beta"},
-            {"name": "凯利·70/30 CTA", "reason": "主仓吃趋势 + CTA 腿真分散，回撤更稳"},
+            {"name": "凯利·70/30 CTA", "reason": "主仓吃趋势 + CTA 部分真分散，回撤更稳"},
         ],
     },
     "避险": {
@@ -70,7 +70,7 @@ REGIME_RECOMMENDATIONS = {
         "bg": "#ffebee",
         "advice": "高波动 + 趋势崩塌，保护本金为第一优先，不硬扛成长动量",
         "strategies": [
-            {"name": "凯利·70/30 反脆弱", "reason": "卫星腿买 put，暴跌时有凸性收益"},
+            {"name": "凯利·70/30 反脆弱", "reason": "卫星仓位买 put（看跌期权），暴跌时有凸性收益"},
             {"name": "反脆弱策略", "reason": "尾部对冲在暴跌时产生凸性收益"},
             {"name": "满仓SPY长期持有", "reason": "危机终会过去，满仓大盘扛过去（回撤预算 −40%）"},
         ],
@@ -103,7 +103,7 @@ REGIME_RECOMMENDATIONS = {
         "bg": "#f5f5f5",
         "advice": "无明确信号，按生产策略正常配置",
         "strategies": [
-            {"name": "成长动量·个股", "reason": "生产主线：3M 动量 top12 满仓，单票顶 20%"},
+            {"name": "成长动量·个股", "reason": "生产主线：3M 动量 top8 涨幅加权，单票顶 20%"},
             {"name": "满仓QQQ长期持有", "reason": "不想折腾就满仓 QQQ 长持"},
             {"name": "风险平价策略", "reason": "不判断方向，按波动率均衡分配"},
         ],

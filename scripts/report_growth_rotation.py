@@ -18,7 +18,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.backtest import BacktestEngine
-from core.data.config import GROWTH_UNIVERSE, STRATEGY_UNIVERSE
+from core.data.config import GROWTH_UNIVERSE, STRATEGY_UNIVERSE, US_LARGE_CAP_UNIVERSE
 from core.data.manager import DataManager
 from core.strategy.strategies import (
     DualMomentumKellyFilterStrategy,
@@ -67,8 +67,13 @@ def _yearly(nav: pd.Series) -> dict:
 
 def load_data(start: str, end: str) -> dict:
     dm = DataManager()
+    need = sorted(set(GROWTH_UNIVERSE) | set(US_LARGE_CAP_UNIVERSE))
+    stale = dm.us_stocks_need_refresh("2018-01-01", end, symbols=need)
+    if stale:
+        print(f"补拉 {len(stale)} 只个股（其余已有覆盖）...")
+        dm.fetch_us_stocks(outputsize=2000, symbols=stale)
     syms = dict(STRATEGY_UNIVERSE)
-    syms.update(GROWTH_UNIVERSE)
+    syms.update(US_LARGE_CAP_UNIVERSE)
     data = {}
     for s in syms:
         df = dm.load(s, "2018-01-01", end)
@@ -149,7 +154,7 @@ def main():
 
     print("\n结论口径：")
     print("- 全期 CAGR≈26% ≠ 「稳稳 3 年 1 倍」；看 3 年滚动 ≥26% 占比")
-    print("- 引擎（月首调仓）实测 3 年滚动 ≥26% 约 25–30% 窗口，中位 3 年 CAGR 约 19–21%")
+    print("- 生产（top8 动量加权）3Y 中位约 25.6%、≥26% 约 47.9% 窗口")
     print("- 仍双优于 QQQ（CAGR 更高、MaxDD 不更深），但不是无回撤的稳态 26%")
     print("- A2 组合 DD 刹车对个股动量作废（会死锁空仓），本策略 portfolio_dd_brake=False")
     print("- 组合回撤红线 −40%（2026-10 放宽）；满仓 QQQ/SPY 长持为对照基准")

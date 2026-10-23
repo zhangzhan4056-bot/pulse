@@ -767,9 +767,9 @@ class DualMomentumKellyFilterStrategy(DualMomentumKellyStrategy):
 
 
 class SleeveBlendStrategy(BaseStrategy):
-    """双策略权重拼盘骨架：w = w_a·腿A + w_b·腿B
+    """双策略权重拼盘骨架：w = w_a·仓位A + w_b·仓位B
 
-    月频一次调仓。腿内各自 20% 顶，拼盘后再受总仓位约束。
+    月频一次调仓。两块各自 20% 顶，拼盘后再受总仓位约束。
     """
 
     name = "策略拼盘"
@@ -830,14 +830,14 @@ class DualMomentumKellyHedgeSleeveStrategy(SleeveBlendStrategy):
     """D4：70% 凯利门槛8%进取 + 30% 反脆弱
 
     ⚠️ 反脆弱主仓也是双动量，日收益相关约 0.89，分散有限。
-    卫星腿带 5% OTM 月 put（成本按 30% 腿折算 0.09%/月）。
+    卫星仓位带 5% OTM 月 put（成本按 30% 仓位折算 0.09%/月）。
     回测拼盘：+114% / −19.1% / 夏普 0.83 —— 收益高主要来自重复下注双动量，不是对冲。
     """
 
     name = "凯利·70/30 反脆弱"
     description = "70% 凯利门槛8%（k=0.7）+ 30% 反脆弱（相关0.89，分散有限）"
 
-    # 对冲只作用在 30% 卫星腿：成本 0.3%/月 × 0.3 ≈ 0.09%/月
+    # 对冲只作用在 30% 卫星仓位：成本 0.3%/月 × 0.3 ≈ 0.09%/月
     hedge_monthly_cost: float = 0.0009
     hedge_otm_threshold: float = 0.05
     hedge_vol: float = 0.20
@@ -1350,28 +1350,28 @@ class RegimeSwitchingStrategy(BaseStrategy):
 
 
 class StockMomentumGrowthStrategy(BaseStrategy):
-    """成长动量·美股个股（修订版 B）
+    """成长动量·美股个股
 
     目标：3 年 1 倍（CAGR ~26%）且风险收益双优于 QQQ。
     引擎实测（2019-01~2025-12，月首调仓，佣金 0.1%，55 股含落后股）：
-    - 满仓 3M top12: CAGR 27.9% / DD −34.8% / 3 年滚动中位 20.9%、≥26% 占比 29%
+    - 动量加权 top8（生产，2026-10 从等权切换）: CAGR 29.9% / DD −31.6% / Calmar 0.94 / 3Y 中位 25.6%、≥26% 占比 47.9%
+    - 旧等权 top8: CAGR 28.7% / DD −35.6% / Calmar 0.81 / 3Y 中位 23.7%、≥26% 占比 37.5%
     - QQQ: CAGR 21.8% / DD −35.6% / 3 年滚动中位 12.8%
-    全期 CAGR 接近 26%，但 3 年滚动 ≥26% 只有约 3 成窗口——「经常够」不是「稳稳」。
 
     设计要点：
-    1. 3 个月横截面动量 top12，只要正收益，满仓等权
+    1. 3 个月横截面动量 top8，只要正收益；权重 ∝ 3M 涨幅，归一后 clip 20%（不回补，差额进 SHY）
     2. 组合 DD 刹车（A2）明确关闭 —— 个股动量天然回撤 −30%+，A2 会死锁在空仓
     3. 组合回撤红线 −40%（用户 2026-10 放宽，接受成长动量量级回撤）
     单票紧止损（吊灯 k=3/4 或 −8%）会砍掉主升浪，已否掉；引擎仅月频调权，盘中止损本就不生效。
     """
 
     name = "成长动量·个股"
-    description = "美股 55 股 3M 动量 top12 满仓等权，无 A2；引擎实测 CAGR 27.9% / DD −34.8%"
+    description = "美股 55 股 3M 动量 top8 动量加权，无 A2；引擎实测 CAGR 29.9% / DD −31.6%"
     category = "趋势动量"
     rebalance_freq: str = "M"
 
     mom_lookback: int = 63          # 3 个月
-    top_n: int = 12
+    top_n: int = 8
     stock_budget: float = 1.0
     defense_budget: float = 0.0
     min_history: int = 66           # 至少 3 个月交易日
@@ -1384,8 +1384,11 @@ class StockMomentumGrowthStrategy(BaseStrategy):
     dd_restore: Optional[float] = None
     dd_brake_intraday: bool = False
 
+    stock_universe: Dict[str, str] = US_STOCK_UNIVERSE
+    full_universe: Dict[str, str] = GROWTH_UNIVERSE
+
     def get_all_symbols(self) -> List[str]:
-        return list(GROWTH_UNIVERSE.keys())
+        return list(self.full_universe.keys())
 
     def _defense_leg(self, sliced: Dict[str, pd.Series]) -> Dict[str, float]:
         """SPY 12M>0 → QQQ，否则 SHY；历史不足持 SHY"""
@@ -1409,7 +1412,7 @@ class StockMomentumGrowthStrategy(BaseStrategy):
         sliced = _slice_data(all_data, current_date, max(lookback_days, 300))
 
         returns = {}
-        for symbol in US_STOCK_UNIVERSE:
+        for symbol in self.stock_universe:
             close = sliced.get(symbol)
             if close is None or len(close) < self.min_history:
                 continue
@@ -1420,15 +1423,15 @@ class StockMomentumGrowthStrategy(BaseStrategy):
         weights: Dict[str, float] = {}
 
         if returns:
-            ranked = sorted(returns.items(), key=lambda x: x[1], reverse=True)
-            selected = [s for s, _ in ranked[: self.top_n]]
-            if selected:
-                per = self.stock_budget / len(selected)
-                # 单票红线：top_n=12 时 8.3% 自然合规；top_n 更小时 clip
-                per = min(per, self.per_name_cap)
-                for s in selected:
-                    weights[s] = per
-                # clip 后总仓位可能低于 stock_budget，缺的进防御/现金
+            ranked = sorted(returns.items(), key=lambda x: x[1], reverse=True)[: self.top_n]
+            # 动量加权：w ∝ 3M 涨幅，归一到 stock_budget，clip 单票顶后不回补
+            total_ret = sum(r for _, r in ranked)
+            if total_ret > 0:
+                for s, r in ranked:
+                    w = self.stock_budget * r / total_ret
+                    if w > self.per_name_cap:
+                        w = self.per_name_cap
+                    weights[s] = w
 
         for s, w in self._defense_leg(sliced).items():
             weights[s] = weights.get(s, 0.0) + w

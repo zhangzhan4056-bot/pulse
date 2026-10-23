@@ -7,13 +7,13 @@
     python3 scripts/export_target_weights.py
 
 输出到 data/target_weights/YYYY-MM-DD/:
-    tiger.json   — 老虎/OpenAPI 可吃的美股腿
-    domestic.csv — 境内券商手动/QMT 腿
+    tiger.json   — 老虎/OpenAPI 可吃的美股持仓
+    domestic.csv — 境内券商手动/QMT 持仓
     summary.md   — 人类可读的本月调仓单
 
 执行约定：
-    - 本策略全为美股个股，境内腿通常为空（保持货基）
-    - 美股腿：当晚开盘后下单
+    - 本策略全为美股个股，境内账户通常为空（保持货基）
+    - 美股部分：当晚开盘后下单
     - 单票 20% 顶；回撤预算 −40%，无自动刹车（A2 对个股动量会死锁空仓）
 """
 
@@ -31,7 +31,7 @@ from core.strategy.strategies import StockMomentumGrowthStrategy
 from core.backtest.engine import BacktestEngine
 
 # 双账户拆分（路径 1）
-# 本策略持仓全为美股个股 → 老虎；境内腿通常为空
+# 本策略持仓全为美股个股 → 老虎；境内账户通常为空
 DOMESTIC_SYMBOLS = list(CN_SYMBOLS.keys())
 TIGER_PROXY = {"日经225": "EWJ", "KOSPI": "EWY"}
 
@@ -40,7 +40,7 @@ def build_monthly_allocation(end: Optional[str] = None) -> dict:
     """计算本月目标权重 + 近一年权重路径，供导出脚本和飞书月报共用。"""
     dm = DataManager()
     end = end or datetime.now().strftime("%Y-%m-%d")
-    # 生产策略：成长动量·个股（2026-10 切换）。3M 动量 top12 满仓
+    # 生产策略：成长动量·个股（2026-10 切 top8 动量加权）。3M 动量 top8，w∝涨幅
     strategy = StockMomentumGrowthStrategy()
 
     # 加载成长动量宇宙（55 股 + SPY/QQQ/SHY）；缺数才补拉
@@ -100,6 +100,80 @@ def build_monthly_allocation(end: Optional[str] = None) -> dict:
     eq = result.equity_curve
     current_dd = float(eq.iloc[-1] / eq.cummax().iloc[-1] - 1.0)
 
+    # 分年对照：策略 vs 满仓 QQQ / SPY（买入持有）
+    # 起点对齐策略净值首日，避免「基准从 2019、策略预热后才有」的不公平对照
+    import pandas as pd
+
+    eq_start = pd.to_datetime(eq.index[0])
+
+    def _bench_yearly(sym: str) -> dict:
+        df = all_data.get(sym)
+        if df is None or len(df) < 2:
+            return {}
+        d = df.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        d = d[(d["date"] >= eq_start) & (d["date"] <= as_of)].sort_values("date")
+        if len(d) < 2:
+            return {}
+        out = {}
+        for y in sorted(set(d["date"].dt.year)):
+            seg = d[d["date"].dt.year == y]
+            if len(seg) < 2:
+                continue
+            prev = d[d["date"].dt.year < y]
+            start = float(prev["close"].iloc[-1]) if len(prev) else float(seg["close"].iloc[0])
+            out[y] = float(seg["close"].iloc[-1] / start - 1.0)
+        return out
+
+    def _bench_total(sym: str) -> dict:
+        df = all_data.get(sym)
+        if df is None or len(df) < 2:
+            return {}
+        d = df.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        d = d[(d["date"] >= eq_start) & (d["date"] <= as_of)].sort_values("date")
+        if len(d) < 2:
+            return {}
+        nav = d["close"] / float(d["close"].iloc[0])
+        years = (d["date"].iloc[-1] - d["date"].iloc[0]).days / 365.25
+        total = float(nav.iloc[-1] - 1.0)
+        cagr = (1.0 + total) ** (1 / years) - 1 if years > 0 else float("nan")
+        dd = float((nav / nav.cummax() - 1.0).min())
+        return {"total": total, "cagr": cagr, "max_dd": dd}
+
+    qqq_y, spy_y = _bench_yearly("QQQ"), _bench_yearly("SPY")
+    strategy_y = {}
+    for y in sorted(set(eq.index.year)):
+        seg = eq[eq.index.year == y]
+        if len(seg) < 2:
+            continue
+        prev = eq[eq.index.year < y]
+        start = float(prev.iloc[-1]) if len(prev) else float(eq.iloc[0])
+        strategy_y[y] = float(seg.iloc[-1] / start - 1.0)
+
+    bench_yearly = []
+    for y in sorted(set(strategy_y) | set(qqq_y) | set(spy_y)):
+        s = strategy_y.get(y)
+        q = qqq_y.get(y)
+        p = spy_y.get(y)
+        bench_yearly.append({
+            "year": y,
+            "strategy": s,
+            "qqq": q,
+            "spy": p,
+            "ex_qqq": (s - q) if s is not None and q is not None else None,
+            "ex_spy": (s - p) if s is not None and p is not None else None,
+        })
+
+    # 相关标的的 3M 动量（给月报写「为什么进/出」用）
+    mom_map = {}
+    for sym in list(weights.keys()) + list(strategy.stock_universe.keys()):
+        df = all_data.get(sym)
+        if df is None or len(df) < strategy.mom_lookback + 3:
+            continue
+        close = df["close"]
+        mom_map[sym] = float(close.iloc[-1] / close.iloc[-strategy.mom_lookback] - 1.0)
+
     return {
         "as_of": as_of,
         "strategy": strategy,
@@ -112,6 +186,12 @@ def build_monthly_allocation(end: Optional[str] = None) -> dict:
         "equity_curve": eq,
         "weight_history": result.weight_history,
         "name_map": GROWTH_UNIVERSE,
+        "bench_yearly": bench_yearly,
+        "bench_total": {
+            "QQQ": _bench_total("QQQ"),
+            "SPY": _bench_total("SPY"),
+        },
+        "mom_map": mom_map,
     }
 
 
@@ -151,7 +231,7 @@ def write_target_weights(alloc: dict) -> Path:
     for s, w in sorted(domestic_w.items(), key=lambda x: -x[1]):
         lines.append(f"{s},{name_map.get(s, s)},{w:.4f}")
     if not domestic_w:
-        lines.append("# 本月境内腿无目标仓位（保持现金/货基）")
+        lines.append("# 本月境内账户无目标仓位（保持现金/货基）")
     (out_dir / "domestic.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     md = [
@@ -165,10 +245,10 @@ def write_target_weights(alloc: dict) -> Path:
     ]
     if brake_action != "none":
         md.append("- ⚠️ 已按当前回撤减仓，不要用上月满仓单覆盖")
-    md += ["", "## 老虎腿（今晚开盘后）", ""]
+    md += ["", "## 老虎账户（今晚开盘后）", ""]
     for s, w in tiger_payload["weights"].items():
         md.append(f"- {s}: {w:.1%}")
-    md += ["", "## 境内腿（次日开盘前）", ""]
+    md += ["", "## 境内账户（次日开盘前）", ""]
     if domestic_w:
         for s, w in sorted(domestic_w.items(), key=lambda x: -x[1]):
             md.append(f"- {s} {name_map.get(s, s)}: {w:.1%}")
@@ -178,7 +258,7 @@ def write_target_weights(alloc: dict) -> Path:
     (out_dir / "summary.md").write_text("\n".join(md) + "\n", encoding="utf-8")
 
     print(f"已导出 → {out_dir}")
-    print(f"老虎腿 {len(tiger_w)} 个标的，境内腿 {len(domestic_w)} 个标的")
+    print(f"老虎账户 {len(tiger_w)} 个标的，境内账户 {len(domestic_w)} 个标的")
     for s, w in sorted(weights.items(), key=lambda x: -x[1]):
         print(f"  {s:8s} {w:6.1%}")
     return out_dir

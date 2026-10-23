@@ -100,7 +100,7 @@ class BacktestEngine:
         self.warmup_days = warmup_days
 
     # 再平衡频率 → 周期长度（月）
-    _FREQ_TO_MONTHS = {"M": 1.0, "W": 1.0 / 4.33, "D": 1.0 / 21.0}
+    _FREQ_TO_MONTHS = {"M": 1.0, "W": 1.0 / 4.33, "D": 1.0 / 21.0, "Q": 3.0}
 
     def run(
         self,
@@ -494,7 +494,7 @@ class BacktestEngine:
         """获取再平衡日期
 
         Args:
-            freq: "M"=每月首日, "W"=每周首日, "D"=每日
+            freq: "M"=每月首日, "W"=每周首日, "Q"=每季首日, "D"=每日
         """
         dates = pd.to_datetime(trading_dates)
         df = pd.DataFrame({"date": dates})
@@ -504,6 +504,9 @@ class BacktestEngine:
         elif freq == "W":
             df["year_week"] = df["date"].dt.to_period("W")
             return df.groupby("year_week")["date"].first().tolist()
+        elif freq == "Q":
+            df["year_q"] = df["date"].dt.to_period("Q")
+            return df.groupby("year_q")["date"].first().tolist()
         else:  # "M"
             df["year_month"] = df["date"].dt.to_period("M")
             return df.groupby("year_month")["date"].first().tolist()

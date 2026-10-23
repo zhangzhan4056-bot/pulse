@@ -73,17 +73,20 @@ class DataManager:
         required_start: str,
         required_end: str,
         tail_lag_days: int = 7,
+        symbols: Optional[list] = None,
     ) -> list:
         """返回需要 API 补数的美股个股（缺数 / 尾部过旧 / 头部可再延）。
 
         Args:
             required_start: 调用方真正需要的最早日期（预热请由调用方先扣好）
             required_end: 需要覆盖的最后日期
+            symbols: 只检查指定 symbol；默认 US_STOCK_UNIVERSE
 
         已有足够覆盖时返回空列表。免费计划 outputsize 有限，
         已有约 8 年历史时头部再拉也延不了，不再重复请求。
         """
-        symbols = list(US_STOCK_UNIVERSE.keys())
+        if symbols is None:
+            symbols = list(US_STOCK_UNIVERSE.keys())
         earliest = self.storage.get_earliest_dates(symbols)
         today = datetime.now().strftime("%Y-%m-%d")
         end_dt = datetime.strptime(min(required_end, today), "%Y-%m-%d")

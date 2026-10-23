@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""月初飞书月报 — 成长动量·个股 持仓变动 + 策略逻辑 + 分年回测 + 权益/现金仓位
+"""月初飞书月报 — 成长动量·个股
+
+结构：结论 → 本月怎么调（含原因）→ 何时执行 → 近 6 个月持仓 → 历史对照（vs 满仓 QQQ/SPY）→ 策略逻辑 → 风险
 
 用法:
     python3 scripts/monthly_report.py            # 生成并推送飞书
@@ -7,7 +9,7 @@
     python3 scripts/monthly_report.py --force    # 忽略本月已推送标记
 
 月初由 daily_sync 自动触发（每自然月第一次运行）。
-报告口径：简单易懂，只给该买/该卖/仓位占比，不讲策略黑话。
+报告口径：简单易懂，只给该买/该卖/仓位占比/为什么/何时动手，不讲策略黑话。
 合规：金融从业人员，境内只推荐 ETF/场外基金，不出现 A 股个股。
 """
 
@@ -47,38 +49,66 @@ BRAKE_HINT = {
 
 # 策略逻辑说明（固定文案，口径要简单）
 STRATEGY_LOGIC_LINES = [
-    "- **选什么**：每月从 55 只美股大盘股（科技/消费/医药/金融/能源）里挑最强的 12 只",
+    "- **选什么**：每月从 55 只美股大盘股（科技/消费/医药/金融/能源）里挑最强的 8 只",
     "- **能不能买**：过去 3 个月涨幅 **为正** 才买。跌的不碰",
-    "- **买多少**：12 只等权，每只约 **8%**，单票最多 20%",
-    "- **什么时候换**：每月看一次。跌出前 12 名或 3 个月涨幅转负就换掉",
-    "- **什么时候躲**：**不自动躲**。回撤预算 **−40%**（历史最大约 −35%），深回撤人工决策",
+    "- **买多少**：8 只按**涨幅加权**（涨得越多买越多），单票最多 20%",
+    "- **什么时候换**：每月看一次。跌出前 8 名或 3 个月涨幅转负就换掉",
+    "- **什么时候躲**：**不自动躲**。回撤预算 **−40%**（历史最大约 −32%），深回撤人工决策",
     "- **为什么是个股**：个股横截面动量比 ETF 轮动弹性更大，目标 3 年 1 倍量级；代价是回撤深、要扛得住",
 ]
 
 
-def yearly_backtest_rows(equity_curve) -> list:
-    """从模型净值按自然年切收益/最大回撤。佣金 0.1%，含回撤刹车。"""
+def yearly_dd_map(equity_curve) -> dict:
+    """从模型净值按自然年切最大回撤（收益对照走 bench_yearly）。"""
     if equity_curve is None or len(equity_curve) < 2:
-        return []
+        return {}
     eq = equity_curve.copy()
     eq.index = pd.to_datetime(eq.index)
-    rows = []
+    out = {}
     for year in sorted(set(eq.index.year)):
         seg = eq[eq.index.year == year]
         if len(seg) < 2:
             continue
-        prev = eq[eq.index.year < year]
-        start = float(prev.iloc[-1]) if len(prev) else 1.0
-        ret = float(seg.iloc[-1] / start - 1.0)
         peak = seg.cummax()
-        dd = float((seg / peak - 1.0).min())
-        rows.append({
-            "year": year,
-            "return": ret,
-            "max_dd": dd,
-            "end_nav": float(seg.iloc[-1]),
-        })
-    return rows
+        out[year] = float((seg / peak - 1.0).min())
+    return out
+
+
+def fmt_pct(x) -> str:
+    return "—" if x is None else f"{x * 100:+.1f}%"
+
+
+def fmt_pp(x) -> str:
+    return "—" if x is None else f"{x * 100:+.1f}pp"
+
+
+def format_weights(w: dict, limit: int = 12) -> str:
+    """完整持仓一行：AAPL 20% / NVDA 18% / …"""
+    items = sorted(
+        ((s, wt) for s, wt in w.items() if wt > 1e-4),
+        key=lambda x: -x[1],
+    )
+    if not items:
+        return "空仓"
+    parts = [f"{s} {wt:.0%}" for s, wt in items[:limit]]
+    if len(items) > limit:
+        parts.append(f"…另 {len(items) - limit} 只")
+    return " / ".join(parts)
+
+
+def change_reason(action: str, symbol: str, mom_map: dict) -> str:
+    """用 3M 动量解释为什么进/出/调。"""
+    mom = mom_map.get(symbol)
+    if mom is None:
+        return ""
+    m = f"{mom * 100:+.0f}%"
+    if action == "新进":
+        return f"3 个月涨幅 {m}，冲进前 8"
+    if action == "清仓":
+        return f"3 个月涨幅 {m}，转负不买" if mom <= 0 else f"3 个月涨幅 {m}，跌出前 8"
+    if action == "加仓":
+        return f"3 个月涨幅 {m}，动量权重上调"
+    return f"3 个月涨幅 {m}，动量权重下调"
 
 
 def split_buckets(weights: dict) -> dict:
@@ -110,15 +140,71 @@ def display_symbol(symbol: str, name_map: dict) -> str:
     return f"{symbol} {name}"
 
 
-def top_holdings(weights: dict, n: int = 3) -> str:
-    items = [
-        (s, w) for s, w in weights.items()
-        if s != CASH_PROXY and w > 1e-4
-    ]
-    items.sort(key=lambda x: -x[1])
-    if not items:
-        return "现金"
-    return " / ".join(f"{s}{w:.0%}" for s, w in items[:n])
+def yearly_bench_lines(bench_yearly: list, bench_total: dict, equity_curve) -> list:
+    """分年对照：策略 vs 满仓 QQQ / 满仓 SPY，并给跑赢次数。"""
+    dd_map = yearly_dd_map(equity_curve)
+    lines = []
+    beat_qqq = beat_spy = n_cmp = 0
+    for r in bench_yearly or []:
+        y = r["year"]
+        dd = dd_map.get(y)
+        seg = (
+            f"- {y}　策略 **{fmt_pct(r.get('strategy'))}**"
+            f"　满仓QQQ（纳斯达克100ETF）{fmt_pct(r.get('qqq'))}"
+            f"　满仓SPY（标普500ETF）{fmt_pct(r.get('spy'))}"
+        )
+        if dd is not None:
+            seg += f"　策略回撤 {dd * 100:.1f}%"
+        if r.get("ex_qqq") is not None:
+            seg += f"　vs QQQ **{fmt_pp(r['ex_qqq'])}**"
+            n_cmp += 1
+            if r["ex_qqq"] > 0:
+                beat_qqq += 1
+        if r.get("ex_spy") is not None:
+            seg += f"　vs SPY {fmt_pp(r['ex_spy'])}"
+            if r["ex_spy"] > 0:
+                beat_spy += 1
+        lines.append(seg)
+
+    # 全期汇总（起点=策略净值首日，与基准对齐）
+    eq = equity_curve
+    if eq is not None and len(eq) > 1:
+        eq2 = eq.copy()
+        eq2.index = pd.to_datetime(eq2.index)
+        years = (eq2.index[-1] - eq2.index[0]).days / 365.25
+        total = float(eq2.iloc[-1] / eq2.iloc[0] - 1.0)
+        cagr = (1.0 + total) ** (1 / years) - 1 if years > 0 else float("nan")
+        max_dd = float((eq2 / eq2.cummax() - 1.0).min())
+        q = (bench_total or {}).get("QQQ") or {}
+        p = (bench_total or {}).get("SPY") or {}
+        start_label = eq2.index[0].strftime("%Y-%m")
+        lines.append("")
+        lines.append(
+            f"- **全期 {start_label} 至今**　策略累计 **{total * 100:+.1f}%**"
+            f"（年化 {cagr * 100:.1f}%，最大回撤 {max_dd * 100:.1f}%）"
+        )
+        if q:
+            lines.append(
+                f"- 满仓QQQ（纳斯达克100ETF）累计 {fmt_pct(q.get('total'))}"
+                f"（年化 {q.get('cagr', float('nan')) * 100:.1f}%，最大回撤 {q.get('max_dd', 0) * 100:.1f}%）"
+            )
+        if p:
+            lines.append(
+                f"- 满仓SPY（标普500ETF）累计 {fmt_pct(p.get('total'))}"
+                f"（年化 {p.get('cagr', float('nan')) * 100:.1f}%，最大回撤 {p.get('max_dd', 0) * 100:.1f}%）"
+            )
+    if n_cmp:
+        lines.append("")
+        lines.append(
+            f"- **跑赢次数**：vs 满仓QQQ **{beat_qqq}/{n_cmp} 年**，"
+            f"vs 满仓SPY **{beat_spy}/{n_cmp} 年**"
+        )
+        lines.append(
+            "- 口径：基准=买入持有不折腾；策略含佣金 0.1%。超额是结果不是承诺"
+        )
+    if not lines:
+        lines = ["（净值历史不足，暂无对照）"]
+    return lines
 
 
 def history_rows(weight_history: pd.DataFrame, current: dict, current_date, months: int = 12):
@@ -196,17 +282,21 @@ def diff_holdings(prev: dict, curr: dict) -> list:
 
 
 def build_report(alloc: dict) -> dict:
-    """构建飞书月报内容（纯文本结构，便于 dry-run 检查）。"""
+    """构建飞书月报内容（纯文本结构，便于 dry-run 检查）。
+
+    结构：结论 → 怎么调（带原因）→ 何时执行 → 近月持仓 → 历史对照 → 策略逻辑 → 风险
+    """
     weights = alloc["weights"]
     brake = alloc["brake_action"]
     current_dd = alloc["current_dd"]
     as_of = alloc["as_of"]
     name_map = alloc["name_map"]
+    mom_map = alloc.get("mom_map") or {}
     buckets = split_buckets(weights)
 
     prev_w = prev_month_weights(alloc["weight_history"], as_of)
     diffs = diff_holdings(prev_w, weights)
-    hist = history_rows(alloc["weight_history"], weights, as_of, months=12)
+    hist = history_rows(alloc["weight_history"], weights, as_of, months=6)
 
     # 一句话结论 — 标题/结论都钉死「成长动量·个股」
     strategy = alloc["strategy"]
@@ -216,31 +306,11 @@ def build_report(alloc: dict) -> dict:
             f"生产策略不是成长动量·个股（当前 {strategy_name}），拒绝出月报"
         )
     conclusion = (
-        f"生产策略 **成长动量·个股**（3 个月动量 top12 满仓）　"
+        f"生产策略 **成长动量·个股**（3 个月动量 top8 涨幅加权）　"
         f"**{BRAKE_LABEL.get(brake, brake)}**　"
         f"模型回撤 {current_dd * 100:.1f}%　回撤预算 −40%"
     )
     hint = BRAKE_HINT.get(brake, "")
-
-    # 分年回测
-    yearly = yearly_backtest_rows(alloc.get("equity_curve"))
-    yearly_lines = []
-    for r in yearly:
-        yearly_lines.append(
-            f"- {r['year']} 年　收益 **{r['return'] * 100:+.1f}%**　"
-            f"最大回撤 {r['max_dd'] * 100:.1f}%"
-        )
-    if yearly:
-        eq_all = alloc.get("equity_curve")
-        if eq_all is not None and len(eq_all) > 1:
-            total = float(eq_all.iloc[-1] / eq_all.iloc[0] - 1.0)
-            max_dd_all = float((eq_all / eq_all.cummax() - 1.0).min())
-            y0 = yearly[0]["year"]
-            yearly_lines.append(
-                f"- **{y0} 至今累计 {total * 100:+.1f}%**　最大回撤 {max_dd_all * 100:.1f}%"
-            )
-    if not yearly_lines:
-        yearly_lines = ["（净值历史不足，暂无分年结果）"]
 
     # 仓位：权益 / 黄金 / 现金 必展示；债/油有才展示
     pos_line = (
@@ -250,54 +320,56 @@ def build_report(alloc: dict) -> dict:
     )
     if buckets["defensive"] > 0.005:
         pos_line += f"　债/油 **{buckets['defensive']:.0%}**"
+    pos_line += f"\n本月完整持仓：{format_weights(weights)}"
 
     # 黄金单独一条建议（有无仓位都要说清）
     gold_w = weights.get(GOLD_SYMBOL, 0.0)
     gold_prev = prev_w.get(GOLD_SYMBOL, 0.0)
     if gold_w > 1e-4 and gold_prev <= 1e-4:
-        gold_line = f"- **新进** GLD 黄金ETF → {gold_w:.0%}（分散风险，跟权益对冲）"
+        gold_line = f"- **新进** GLD（黄金ETF）→ {gold_w:.0%}（分散风险，跟权益对冲）"
     elif gold_w > 1e-4 and gold_prev > 1e-4:
         if abs(gold_w - gold_prev) >= 0.005:
             direction = "加仓" if gold_w > gold_prev else "减仓"
             gold_line = (
-                f"- **{direction}** GLD 黄金ETF → {gold_w:.0%}"
+                f"- **{direction}** GLD（黄金ETF）→ {gold_w:.0%}"
                 f"（{gold_prev:.0%} → {gold_w:.0%}）"
             )
         else:
-            gold_line = f"- **持有** GLD 黄金ETF {gold_w:.0%}（与上月持平，不动）"
+            gold_line = f"- **持有** GLD（黄金ETF）{gold_w:.0%}（与上月持平，不动）"
     elif gold_prev > 1e-4:
-        gold_line = f"- **清仓** GLD 黄金ETF（上月 {gold_prev:.0%} → 0%）"
+        gold_line = f"- **清仓** GLD（黄金ETF）（上月 {gold_prev:.0%} → 0%）"
     else:
-        gold_line = "- **不配黄金**（本策略为美股个股，不含 GLD）"
+        gold_line = "- **不配黄金**（本策略为美股个股，不含 GLD（黄金ETF））"
 
-    # 本月调仓
+    # 本月调仓：动作 + 原因（3M 动量）
     if not diffs:
         change_lines = ["本月持仓与上月基本一致，不用动手。"]
     else:
-        change_lines = []
-        for d in diffs[:8]:
+        change_lines = [f"共 **{len(diffs)}** 项变动，按幅度排序："]
+        for d in diffs[:10]:
             sign = "+" if d["delta"] > 0 else "−"
-            change_lines.append(
+            reason = change_reason(d["action"], d["symbol"], mom_map)
+            line = (
                 f"- **{d['action']}** {display_symbol(d['symbol'], name_map)} "
                 f"→ {d['curr']:.0%}（{sign}{abs(d['delta']):.0%}）"
             )
-        if len(diffs) > 8:
-            change_lines.append(f"- …另有 {len(diffs) - 8} 项小变动")
+            if reason:
+                line += f"　{reason}"
+            change_lines.append(line)
+        if len(diffs) > 10:
+            change_lines.append(f"- …另有 {len(diffs) - 10} 项小变动")
+        change_lines.append("")
+        change_lines.append("原因口径：只看过去 3 个月涨幅。涨得越多权重越高；转负或跌出前 8 就换。")
     change_lines.append(gold_line)
 
-    # 近一年结构（黄金单独一列）
-    hist_lines = []
-    for row in hist:
-        b = split_buckets(row["weights"])
-        hist_lines.append(
-            f"- {row['label']}　权益 {b['equity']:.0%} / 黄金 {b['gold']:.0%} / "
-            f"现金 {b['cash']:.0%}　{top_holdings(row['weights'])}"
-        )
-
-    # 执行
+    # 何时执行
     tiger = alloc["tiger_w"]
     domestic = alloc["domestic_w"]
-    exec_lines = []
+    exec_lines = [
+        "- **时点**：今晚美股开盘后一次调完（北京时间约 21:30，夏令时 21:30 / 冬令时 22:30）",
+        "- **顺序**：先卖后买——先减/清的票卖出回笼，再按目标权重买进",
+        "- **账户**：本策略持仓全为美股个股 → **老虎账户**；境内账户通常空仓（保持货基）",
+    ]
     if domestic:
         names = "、".join(
             f"{display_symbol(s, name_map)} {w:.0%}"
@@ -305,24 +377,53 @@ def build_report(alloc: dict) -> dict:
         )
         exec_lines.append(f"- 境内（次日开盘前）：{names}")
     else:
-        exec_lines.append("- 境内：无目标仓位，**保持货基/现金**")
+        exec_lines.append("- 境内（次日开盘前）：无目标仓位，**保持货基/现金**")
     if tiger:
         risk = {s: w for s, w in tiger.items() if s != CASH_PROXY}
         if risk:
             names = "、".join(
                 f"{s} {w:.0%}" for s, w in sorted(risk.items(), key=lambda x: -x[1])
             )
-            exec_lines.append(f"- 老虎（今晚开盘后）：{names}")
+            exec_lines.append(f"- 老虎买入：{names}")
         if tiger.get(CASH_PROXY, 0) > 0.005:
-            exec_lines.append(f"- 老虎闲钱：SHY {tiger[CASH_PROXY]:.0%}")
+            exec_lines.append(f"- 老虎闲钱：SHY（1-3年美债ETF）{tiger[CASH_PROXY]:.0%}")
     else:
-        exec_lines.append("- 老虎：无风险仓位，闲钱进 SHY")
+        exec_lines.append("- 老虎：无风险仓位，闲钱进 SHY（1-3年美债ETF）")
     if gold_w > 1e-4:
-        exec_lines.append(f"- 黄金：老虎买 **GLD {gold_w:.0%}**（或境内黄金 ETF 同步）")
+        exec_lines.append(f"- 黄金：老虎买 **GLD（黄金ETF）{gold_w:.0%}**（或境内黄金 ETF 同步）")
     else:
-        exec_lines.append("- 黄金：本月 **0%**，不买 GLD/黄金 ETF")
-    exec_lines.append("- 合规：境内只买 **ETF/场外基金**，不碰个股")
-    exec_lines.append("- 单票 ≤20%；成交记到 data/live_trades.csv")
+        exec_lines.append("- 黄金：本月 **0%**，不买 GLD（黄金ETF）")
+    exec_lines += [
+        "- **不要拖到月中**：权重是月初信号，拖久了动量已变，等于用旧指令交易",
+        "- 单票 ≤20%；成交记到 data/live_trades.csv",
+    ]
+
+    # 近月持仓（完整权重，不只 top3）
+    hist_lines = []
+    for row in hist:
+        b = split_buckets(row["weights"])
+        hist_lines.append(
+            f"- **{row['label']}**　权益 {b['equity']:.0%} / 现金 {b['cash']:.0%}"
+            f"　{format_weights(row['weights'])}"
+        )
+    hist_lines.append("")
+    hist_lines.append("口径：每月首个交易日收盘后的目标权重（含未配满进 SHY）。")
+
+    # 历史对照：分年 vs 满仓 QQQ / SPY
+    bench_lines = yearly_bench_lines(
+        alloc.get("bench_yearly"),
+        alloc.get("bench_total"),
+        alloc.get("equity_curve"),
+    )
+
+    # 风险（客观，不粉饰）
+    risk_lines = [
+        f"- 模型当前回撤 **{current_dd * 100:.1f}%**，回撤预算 **−40%**；贴近时人工评估，**无自动减仓**",
+        "- 历史最大回撤约 **−32%**（引擎实测 2019–2025）。个股集中 top8，跌起来比指数狠，要扛得住",
+        "- 股票池是 **2019 年静态快照**，新一代赢家不在池内时收益会滑向指数；按触发条件人工评审换股，不自动换血",
+        "- 3 年滚动做到 ≥26% 的窗口约 **48%**——「经常够」不是「稳稳 3 年 1 倍」",
+        "- 历史回测 ≠ 未来。超额来自池内恰好有 NVDA/礼来 级赢家，不是机制永续",
+    ]
 
     return {
         "title": (
@@ -333,10 +434,11 @@ def build_report(alloc: dict) -> dict:
         "hint": hint,
         "pos_line": pos_line,
         "change_lines": change_lines,
-        "strategy_lines": STRATEGY_LOGIC_LINES,
-        "yearly_lines": yearly_lines,
-        "hist_lines": hist_lines,
         "exec_lines": exec_lines,
+        "hist_lines": hist_lines,
+        "bench_lines": bench_lines,
+        "strategy_lines": STRATEGY_LOGIC_LINES,
+        "risk_lines": risk_lines,
         "severity": "warning" if brake != "none" else "info",
     }
 
@@ -349,17 +451,19 @@ def to_feishu_elements(report: dict) -> list:
     return [
         {"tag": "markdown", "content": "\n".join(parts)},
         {"tag": "hr"},
-        {"tag": "markdown", "content": f"**仓位占比**\n{report['pos_line']}"},
+        {"tag": "markdown", "content": f"**本月持仓与仓位**\n{report['pos_line']}"},
         {"tag": "hr"},
-        {"tag": "markdown", "content": "**本月怎么调**\n" + "\n".join(report["change_lines"])},
+        {"tag": "markdown", "content": "**本月怎么调（含原因）**\n" + "\n".join(report["change_lines"])},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "**何时执行**\n" + "\n".join(report["exec_lines"])},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "**近 6 个月持仓**\n" + "\n".join(report["hist_lines"])},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "**历史对照（vs 满仓 QQQ / SPY）**\n" + "\n".join(report["bench_lines"])},
         {"tag": "hr"},
         {"tag": "markdown", "content": "**策略逻辑（成长动量·个股）**\n" + "\n".join(report["strategy_lines"])},
         {"tag": "hr"},
-        {"tag": "markdown", "content": "**历史每年回测**\n" + "\n".join(report["yearly_lines"])},
-        {"tag": "hr"},
-        {"tag": "markdown", "content": "**近一年持仓结构**\n" + "\n".join(report["hist_lines"])},
-        {"tag": "hr"},
-        {"tag": "markdown", "content": "**怎么执行**\n" + "\n".join(report["exec_lines"])},
+        {"tag": "markdown", "content": "**风险（客观）**\n" + "\n".join(report["risk_lines"])},
     ]
 
 
@@ -373,23 +477,26 @@ def format_plain(report: dict) -> str:
         lines.append(report["hint"])
     lines += [
         "",
-        "【仓位占比】",
+        "【本月持仓与仓位】",
         report["pos_line"],
         "",
-        "【本月怎么调】",
+        "【本月怎么调（含原因）】",
         *report["change_lines"],
+        "",
+        "【何时执行】",
+        *report["exec_lines"],
+        "",
+        "【近 6 个月持仓】",
+        *report["hist_lines"],
+        "",
+        "【历史对照（vs 满仓 QQQ / SPY）】",
+        *report["bench_lines"],
         "",
         "【策略逻辑（成长动量·个股）】",
         *report["strategy_lines"],
         "",
-        "【历史每年回测】",
-        *report["yearly_lines"],
-        "",
-        "【近一年持仓结构】",
-        *report["hist_lines"],
-        "",
-        "【怎么执行】",
-        *report["exec_lines"],
+        "【风险（客观）】",
+        *report["risk_lines"],
     ]
     return "\n".join(lines)
 

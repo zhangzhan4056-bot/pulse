@@ -1614,7 +1614,7 @@ def _generate_strategy_suggestions(perf_df: pd.DataFrame, full_results: List[Bac
                     "priority": "中",
                     "summary": "生产策略回撤接近 −40% 预算，关注是否需要人工干预",
                     "problem": f"最大回撤 {max_dd:.1f}%，接近组合 −40% 回撤预算",
-                    "current": "3M 动量 top12 满仓等权，单票 20%，无自动刹车",
+                    "current": "3M 动量 top8 涨幅加权，单票顶 20%，无自动刹车",
                     "suggestion": "回撤贴近 −40% 时人工评估是否降仓；不要加自动 A2（会死锁空仓）",
                     "reason": "个股动量天然 −30%+ 回撤，自动刹车已证伪；−40% 是人工红线",
                 })
