@@ -1,0 +1,4 @@
+# Streamlit Cloud 默认把异常消息 redact，只留 stacktrace 首帧，排查 ImportError 看不到根因。
+# 个人自用工具，透出完整错误信息（不进日志的密钥仍在 secrets / 环境变量，不走异常文本）。
+[client]
+showErrorDetails = "full"

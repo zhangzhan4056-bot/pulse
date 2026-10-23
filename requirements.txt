@@ -1,4 +1,5 @@
-streamlit>=1.30.0
+# 钉上界：Cloud 装 latest；1.66 起 pages/ 走 _mpa_v1，上界对齐本地验证栈
+streamlit>=1.50,<1.67
 plotly>=5.18.0
 pandas>=2.0.0
 numpy>=1.24.0
